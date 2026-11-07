@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f1720">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/static/icon-192.png">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+  <title>Proximity Voice</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main>
+    <section id="login">
+      <div class="logo" aria-hidden="true">🎙️</div>
+      <h1>Proximity Voice</h1>
+      <p class="sub">คุยกับเพื่อนในมายคราฟ ยิ่งใกล้ยิ่งได้ยินชัด</p>
+
+      <label for="gamertag">Gamertag ในเกม</label>
+      <input id="gamertag" type="text" autocomplete="off" autocapitalize="off" spellcheck="false"
+             placeholder="เช่น Nirth" maxlength="32">
+      <button id="joinBtn" class="primary">เข้าร่วม</button>
+      <p id="loginError" class="error" role="alert"></p>
+
+      <p class="hint">ต้องเข้าเกมก่อนถึงจะเข้าร่วมได้ และต้องกดอนุญาตให้ใช้ไมโครโฟน</p>
+      <button id="installBtn" class="ghost" hidden>ติดตั้งเป็นแอพ</button>
+      <p class="hint small" id="iosHint" hidden>iPhone/iPad: กดปุ่มแชร์ แล้วเลือก "เพิ่มลงหน้าจอโฮม"</p>
+    </section>
+
+    <section id="room" hidden>
+      <header>
+        <div class="me">
+          <span id="meDot" class="dot"></span>
+          <div>
+            <div id="meName" class="pname"></div>
+            <div id="status" class="pmeta"></div>
+          </div>
+        </div>
+        <button id="leaveBtn" class="ghost small">ออก</button>
+      </header>
+
+      <button id="muteBtn" class="mute" aria-pressed="false">
+        <span class="icon" id="muteIcon">🎙️</span>
+        <span id="muteLabel">ไมค์เปิดอยู่</span>
+      </button>
+
+      <div class="row-slider">
+        <label for="masterVol">เสียงรวม</label>
+        <input id="masterVol" type="range" min="0" max="150" value="100">
+      </div>
+
+      <h2>ผู้เล่นในเซิร์ฟเวอร์</h2>
+      <ul id="players"></ul>
+      <p id="empty" class="hint">ยังไม่มีผู้เล่นคนอื่น</p>
+      <p id="connNote" class="hint"></p>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -2,6 +2,10 @@ name: Build APK
 
 on:
   push:
+    paths-ignore:
+      - 'server/**'
+      - 'render.yaml'
+      - 'README.md'
   workflow_dispatch:
 
 permissions:
