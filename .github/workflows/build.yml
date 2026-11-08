@@ -23,17 +23,54 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
+
+      - name: Read app version
+        id: ver
+        run: |
+          NAME=$(grep -E "versionName" app/build.gradle | head -1 | sed -E "s/.*['\"]([^'\"]+)['\"].*/\1/")
+          CODE=$(grep -E "versionCode" app/build.gradle | head -1 | sed -E "s/[^0-9]//g")
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "tag=v$NAME" >> "$GITHUB_OUTPUT"
+          echo "Version: v$NAME ($CODE)"
+
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon
+
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk ProximityVoice.apk
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk "ProximityVoice-${{ steps.ver.outputs.tag }}.apk"
+          cp "ProximityVoice-${{ steps.ver.outputs.tag }}.apk" ProximityVoice.apk
+
       - uses: actions/upload-artifact@v4
         with:
-          name: ProximityVoice-apk
-          path: ProximityVoice.apk
-      - name: Publish release
+          name: ProximityVoice-${{ steps.ver.outputs.tag }}
+          path: |
+            ProximityVoice.apk
+            ProximityVoice-${{ steps.ver.outputs.tag }}.apk
+
+      - name: Publish versioned release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          TAG="${{ steps.ver.outputs.tag }}"
+          TITLE="Proximity Voice ${TAG}"
+          NOTES="APK ${TAG} (versionCode ${{ steps.ver.outputs.code }})
+
+          - Mobile voice overlay (mic / deaf / range − +)
+          - WebView shell for the ProxVoice server
+          "
+
           gh release delete latest --yes --cleanup-tag || true
-          gh release create latest ProximityVoice.apk --title "Proximity Voice APK" --notes "Debug APK (latest build)" --target "${{ github.sha }}"
+          gh release create latest \
+            ProximityVoice.apk "ProximityVoice-${TAG}.apk" \
+            --title "${TITLE} (latest)" \
+            --notes "${NOTES}" \
+            --target "${{ github.sha }}"
+
+          gh release delete "$TAG" --yes --cleanup-tag || true
+          gh release create "$TAG" \
+            ProximityVoice.apk "ProximityVoice-${TAG}.apk" \
+            --title "${TITLE}" \
+            --notes "${NOTES}" \
+            --target "${{ github.sha }}"
