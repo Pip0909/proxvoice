@@ -1,1 +1,110 @@
-PLACEHOLDER_HTML
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f1720">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/static/icon-192.png">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+  <title>Proximity Voice</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main>
+    <section id="login">
+      <div class="logo" aria-hidden="true">🎙️</div>
+      <h1>Proximity Voice</h1>
+      <p class="sub">คุยกับเพื่อนในมายคราฟ ยิ่งใกล้ยิ่งได้ยินชัด</p>
+
+      <label for="gamertag">Gamertag ในเกม</label>
+      <input id="gamertag" type="text" autocomplete="off" autocapitalize="off" spellcheck="false"
+             placeholder="เช่น Nirth" maxlength="32">
+      <button id="joinBtn" class="primary">เข้าร่วม</button>
+      <p id="loginError" class="error" role="alert"></p>
+
+      <p class="hint">กรอก Gamertag แล้วกดเข้าร่วมได้เลย ไม่จำเป็นต้องเข้าเกมก่อน<br>
+        เมื่อเข้าเกมแล้วระบบจะจับคู่ชื่ออัตโนมัติและเปิดเสียงระยะใกล้<br>
+        (ต้องกดอนุญาตไมโครโฟน)</p>
+      <button id="installBtn" class="ghost" hidden>ติดตั้งเป็นแอพ</button>
+      <p class="hint small" id="iosHint" hidden>iPhone/iPad: กดปุ่มแชร์ แล้วเลือก "เพิ่มลงหน้าจอโฮม"</p>
+    </section>
+
+    <section id="room" hidden>
+      <div class="head">
+        <header class="topbar">
+          <div class="me">
+            <span id="meDot" class="dot"></span>
+            <div>
+              <div id="meName" class="pname"></div>
+              <div id="status" class="pmeta"></div>
+            </div>
+          </div>
+          <button id="leaveBtn" class="ghost small">ออก</button>
+        </header>
+
+        <div class="controls" role="toolbar" aria-label="ควบคุมเสียง">
+          <button id="micBtn" class="ctl" aria-pressed="false" title="เปิด/ปิดไมค์ (M)">
+            <span class="ico" id="micIcon">🎙️</span><span class="lbl" id="micLabel">ไมค์</span>
+          </button>
+          <button id="deafBtn" class="ctl" aria-pressed="false" title="ปิดหู (D)">
+            <span class="ico" id="deafIcon">🎧</span><span class="lbl" id="deafLabel">หู</span>
+          </button>
+          <div class="stepper" id="rangeBox">
+            <button id="rangeDown" class="step" aria-label="ลดวงไมค์">−</button>
+            <button id="rangeVal" class="rv" title="แตะเพื่อกลับค่าเริ่มต้น">
+              <span id="rangeNum">–</span><span class="lbl" id="rangeLbl">วงไมค์</span>
+            </button>
+            <button id="rangeUp" class="step" aria-label="เพิ่มวงไมค์">+</button>
+          </div>
+          <button id="adminBtn" class="ctl" aria-pressed="false" title="แอดมิน">
+            <span class="ico">🛡️</span><span class="lbl">แอดมิน</span>
+          </button>
+        </div>
+        <p id="notice" class="notice" hidden></p>
+      </div>
+
+      <section id="adminPanel" class="panel" hidden>
+        <div class="panel-title">
+          <span>🛡️ แอดมิน</span>
+          <button id="adminLogout" class="ghost small" hidden>ออกจากโหมดแอดมิน</button>
+        </div>
+        <div id="adminLogin">
+          <label for="adminPw">รหัสแอดมิน</label>
+          <input id="adminPw" type="password" autocomplete="off" spellcheck="false" placeholder="รหัสจากเจ้าของเซิร์ฟเวอร์">
+          <button id="adminPwBtn" class="primary">ปลดล็อก</button>
+          <p id="adminErr" class="error" role="alert"></p>
+        </div>
+        <div id="adminTools" hidden>
+          <button id="globalBtn" class="toggle-row" aria-pressed="false">
+            <span>📣 พูดทั้งโลก</span><span id="globalState" class="state">ปิด</span>
+          </button>
+          <div class="toggle-row static">
+            <span>ระยะพื้นฐานของเซิร์ฟเวอร์</span>
+            <span class="mini-stepper">
+              <button id="baseDown" class="step sm" aria-label="ลดระยะพื้นฐาน">−</button>
+              <span id="baseVal" class="num">–</span>
+              <button id="baseUp" class="step sm" aria-label="เพิ่มระยะพื้นฐาน">+</button>
+              <button id="baseAuto" class="ghost small">ตามเกม</button>
+            </span>
+          </div>
+          <p class="hint">กด 🔇 หรือ 🌍 ที่ชื่อผู้เล่นด้านล่าง เพื่อปิดไมค์ให้ทุกคน หรือให้คนนั้นพูดทั้งโลก</p>
+        </div>
+      </section>
+
+      <div class="row-slider">
+        <label for="masterVol">เสียงรวม</label>
+        <input id="masterVol" type="range" min="0" max="150" value="100">
+      </div>
+
+      <h2>ผู้เล่นในเซิร์ฟเวอร์</h2>
+      <ul id="players"></ul>
+      <p id="empty" class="hint">ยังไม่มีผู้เล่นคนอื่น</p>
+      <p id="connNote" class="hint"></p>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
