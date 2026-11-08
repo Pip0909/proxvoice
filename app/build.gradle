@@ -11,8 +11,28 @@ android {
         minSdk 24
         targetSdk 34
         // Semver-style tags: v0.x.y — versionCode must only go up for installs
-        versionCode 3
-        versionName '0.3.0'
+        versionCode 4
+        versionName '0.3.1'
+    }
+
+    // Fixed keystore so CI builds can update over previous installs
+    signingConfigs {
+        release {
+            storeFile file('keystore/proxvoice-debug.jks')
+            storePassword 'proxvoice'
+            keyAlias 'proxvoice'
+            keyPassword 'proxvoice'
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.release
+        }
+        release {
+            signingConfig signingConfigs.release
+            minifyEnabled false
+        }
     }
 
     compileOptions {
