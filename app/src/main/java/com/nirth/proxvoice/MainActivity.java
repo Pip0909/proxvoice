@@ -56,6 +56,14 @@ public class MainActivity extends Activity {
                 web.evaluateJavascript(
                         "(function(){var b=document.getElementById('deafBtn')||document.getElementById('floatDeaf');if(b)b.click();})();",
                         null);
+            } else if (OverlayService.ACTION_RANGE_DOWN.equals(action)) {
+                web.evaluateJavascript(
+                        "(function(){var b=document.getElementById('rangeDown')||document.getElementById('floatRangeDown');if(b)b.click();})();",
+                        null);
+            } else if (OverlayService.ACTION_RANGE_UP.equals(action)) {
+                web.evaluateJavascript(
+                        "(function(){var b=document.getElementById('rangeUp')||document.getElementById('floatRangeUp');if(b)b.click();})();",
+                        null);
             }
         }
     };
@@ -106,6 +114,8 @@ public class MainActivity extends Activity {
         IntentFilter filter = new IntentFilter();
         filter.addAction(OverlayService.ACTION_TOGGLE_MIC);
         filter.addAction(OverlayService.ACTION_TOGGLE_DEAF);
+        filter.addAction(OverlayService.ACTION_RANGE_DOWN);
+        filter.addAction(OverlayService.ACTION_RANGE_UP);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(overlayActions, filter, Context.RECEIVER_NOT_EXPORTED);
         } else {
@@ -196,9 +206,9 @@ public class MainActivity extends Activity {
         if (web == null) return;
         web.evaluateJavascript(
                 "(function(){window.__proxvoiceNative=true;"
-                        + "window.ProxVoiceOverlay={show:function(n,s,m,d){if(window.ProxVoiceNative)ProxVoiceNative.showOverlay(n||'',s||'',!!m,!!d);},"
+                        + "window.ProxVoiceOverlay={show:function(n,s,m,d,r){if(window.ProxVoiceNative)ProxVoiceNative.showOverlay(n||'',s||'',!!m,!!d,r||'');},"
                         + "hide:function(){if(window.ProxVoiceNative)ProxVoiceNative.hideOverlay();},"
-                        + "update:function(n,s,m,d){if(window.ProxVoiceNative)ProxVoiceNative.updateOverlay(n||'',s||'',!!m,!!d);},"
+                        + "update:function(n,s,m,d,r){if(window.ProxVoiceNative)ProxVoiceNative.updateOverlay(n||'',s||'',!!m,!!d,r||'');},"
                         + "available:function(){return!!window.ProxVoiceNative;}};"
                         + "})();",
                 null);
@@ -220,7 +230,7 @@ public class MainActivity extends Activity {
         startActivityForResult(intent, REQ_OVERLAY);
     }
 
-    private void startOverlay(String name, String status, boolean muted, boolean deafened) {
+    private void startOverlay(String name, String status, boolean muted, boolean deafened, String range) {
         overlayWanted = true;
         if (!canDrawOverlays()) {
             requestOverlayPermission();
@@ -232,6 +242,7 @@ public class MainActivity extends Activity {
         i.putExtra(OverlayService.EXTRA_STATUS, status);
         i.putExtra(OverlayService.EXTRA_MUTED, muted);
         i.putExtra(OverlayService.EXTRA_DEAFENED, deafened);
+        i.putExtra(OverlayService.EXTRA_RANGE, range != null ? range : "–");
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(i);
         } else {
@@ -239,7 +250,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void updateOverlay(String name, String status, boolean muted, boolean deafened) {
+    private void updateOverlay(String name, String status, boolean muted, boolean deafened, String range) {
         if (!overlayWanted) return;
         Intent i = new Intent(this, OverlayService.class);
         i.setAction(OverlayService.ACTION_UPDATE);
@@ -247,6 +258,7 @@ public class MainActivity extends Activity {
         i.putExtra(OverlayService.EXTRA_STATUS, status);
         i.putExtra(OverlayService.EXTRA_MUTED, muted);
         i.putExtra(OverlayService.EXTRA_DEAFENED, deafened);
+        i.putExtra(OverlayService.EXTRA_RANGE, range != null ? range : "–");
         startService(i);
     }
 
@@ -260,13 +272,13 @@ public class MainActivity extends Activity {
 
     public class ProxVoiceBridge {
         @JavascriptInterface
-        public void showOverlay(String name, String status, boolean muted, boolean deafened) {
-            runOnUiThread(() -> MainActivity.this.startOverlay(name, status, muted, deafened));
+        public void showOverlay(String name, String status, boolean muted, boolean deafened, String range) {
+            runOnUiThread(() -> MainActivity.this.startOverlay(name, status, muted, deafened, range));
         }
 
         @JavascriptInterface
-        public void updateOverlay(String name, String status, boolean muted, boolean deafened) {
-            runOnUiThread(() -> MainActivity.this.updateOverlay(name, status, muted, deafened));
+        public void updateOverlay(String name, String status, boolean muted, boolean deafened, String range) {
+            runOnUiThread(() -> MainActivity.this.updateOverlay(name, status, muted, deafened, range));
         }
 
         @JavascriptInterface
@@ -289,7 +301,7 @@ public class MainActivity extends Activity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQ_OVERLAY && overlayWanted && canDrawOverlays()) {
-            startOverlay("Proximity Voice", "Connected", false, false);
+            startOverlay("Proximity Voice", "Connected", false, false, "–");
         }
     }
 
@@ -315,7 +327,8 @@ public class MainActivity extends Activity {
                             + "var s=(document.getElementById('status')||{}).textContent||'';"
                             + "var m=!!(document.getElementById('micBtn')&&document.getElementById('micBtn').classList.contains('is-off'));"
                             + "var d=!!(document.getElementById('deafBtn')&&document.getElementById('deafBtn').classList.contains('is-off'));"
-                            + "ProxVoiceNative.updateOverlay(n,s,m,d);}}catch(e){}})();",
+                            + "var r=(document.getElementById('rangeNum')||document.getElementById('floatRangeNum')||{}).textContent||'–';"
+                            + "ProxVoiceNative.updateOverlay(n,s,m,d,r);}}catch(e){}})();",
                     null);
         }
     }
