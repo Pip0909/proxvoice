@@ -800,8 +800,8 @@ function renderUI() {
       near = a.mode === 'spatial';
       meta = Math.round(d) + ' บล็อก' + (near ? '' : ' · ไกลเกินไป');
     }
-    row.nameEl.textContent = p.name;
-    row.meta.textContent = meta;
+    row.nameEl.textContent = (p.admin || p.op ? '🛡️ ' : '') + p.name;
+    row.meta.textContent = meta + (p.op ? ' · OP' : (p.admin ? ' · แอดมิน' : ''));
     row.actions.hidden = !(selfInfo && selfInfo.admin);
     row.muteBtn.classList.toggle('on', !!p.smuted);
     row.muteBtn.textContent = p.smuted ? '🔇 ปิดไมค์อยู่' : '🔇 ปิดไมค์';
