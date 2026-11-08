@@ -18,6 +18,9 @@ let muted = false;       // user pressed mute in the app
 let gameMuted = false;   // mic switched off inside the game (VC addon)
 let callPairs = new Set();
 let masterVol = 1;
+let deafened = false;    // "deafen" in the app: hear nobody (and the mic goes quiet, like Discord)
+let selfInfo = null;     // what the server says about me: { admin, range, cap, base, override, locked }
+let adminOpen = false;
 
 function pairKey(a, b) {
   return [String(a).toLowerCase(), String(b).toLowerCase()].sort().join('|');
@@ -26,7 +29,8 @@ function pairKey(a, b) {
 // how should the listener hear this speaker right now?
 // returns { mode: 'off' | 'spatial' | 'call', range }
 function audibility(me, p) {
-  if (!me || !p || p.bot || p.mic === false || me.hear === false) return { mode: 'off' };
+  if (!me || !p || p.bot || p.mic === false || me.hear === false || deafened) return { mode: 'off' };
+  if (Number(p.range) < 0) return { mode: 'call' }; // whole world: full volume, any dimension
   if (callPairs.has(pairKey(me.name, p.name))) return { mode: 'call' };
   if (me.dim !== p.dim) return { mode: 'off' };
   const range = Number(p.range) > 0 ? Number(p.range) : cfg.maxDistance;
@@ -144,6 +148,7 @@ async function start() {
   session = { token: res.data.token, name: res.data.name };
   $('#meName').textContent = session.name;
   $('#joinBtn').disabled = false;
+  deafened = false;
   setMuted(false);
   show('room');
   openEvents();
@@ -171,6 +176,10 @@ function leave() {
   rows.forEach((r) => r.el.remove());
   rows.clear();
   session = null;
+  selfInfo = null;
+  deafened = false;
+  adminOpen = false;
+  $('#adminPanel').hidden = true;
   releaseWakeLock();
   show('login');
 }
@@ -192,9 +201,11 @@ function openEvents() {
     positions.clear();
     d.players.forEach((p) => positions.set(p.name.toLowerCase(), p));
     callPairs = new Set((d.calls || []).map((c) => pairKey(c[0], c[1])));
+    selfInfo = d.self || selfInfo;
     const me = session && positions.get(session.name.toLowerCase());
     const gm = !!me && me.mic === false;
     if (gm !== gameMuted) { gameMuted = gm; setMuted(muted); }
+    renderControls();
     updateAudio();
   });
   mine.addEventListener('peer_joined', (e) => {
@@ -426,16 +437,126 @@ function updateAudio() {
 
 // ---------- UI ----------
 
+function micOff() { return muted || gameMuted || deafened; }
+
 function setMuted(m) {
   muted = m;
-  const off = m || gameMuted;
-  if (localStream) localStream.getAudioTracks().forEach((t) => { t.enabled = !off; });
-  $('#muteBtn').classList.toggle('is-muted', off);
-  $('#muteBtn').setAttribute('aria-pressed', String(off));
-  $('#muteIcon').textContent = off ? '🔇' : '🎙️';
-  $('#muteLabel').textContent = gameMuted
-    ? 'ไมค์ถูกปิดในเกม'
-    : (m ? 'ปิดไมค์อยู่ (แตะเพื่อเปิด)' : 'ไมค์เปิดอยู่');
+  if (localStream) localStream.getAudioTracks().forEach((t) => { t.enabled = !micOff(); });
+  renderControls();
+}
+
+function setDeafened(d) {
+  deafened = d;
+  setMuted(muted); // deafening silences the mic as well, like Discord
+  updateAudio();
+}
+
+// ---------- control bar ----------
+
+function fmtRange(r) { return r < 0 ? '🌍' : String(Math.round(r)); }
+function stepFor(v) { return v < 20 ? 2 : v < 100 ? 5 : 25; }
+
+function renderControls() {
+  if (!session) return;
+  const me = positions.get(session.name.toLowerCase());
+  const si = selfInfo;
+  const hearOffInGame = !!(me && me.hear === false);
+  const smutedMe = !!(me && me.smuted);
+
+  const off = micOff();
+  const mic = $('#micBtn');
+  mic.classList.toggle('is-off', off);
+  mic.setAttribute('aria-pressed', String(off));
+  mic.disabled = gameMuted; // the game (or an admin) decides; the button cannot override it
+  $('#micIcon').textContent = off ? '🔇' : '🎙️';
+  $('#micLabel').textContent = off ? 'ปิดไมค์' : 'ไมค์';
+
+  const deaf = $('#deafBtn');
+  deaf.classList.toggle('is-off', deafened || hearOffInGame);
+  deaf.setAttribute('aria-pressed', String(deafened));
+  $('#deafIcon').textContent = deafened || hearOffInGame ? '🙉' : '🎧';
+  $('#deafLabel').textContent = deafened ? 'ปิดหู' : 'หู';
+
+  const box = $('#rangeBox');
+  if (si) {
+    const r = si.range;
+    const max = si.admin ? 1000 : si.cap;
+    $('#rangeNum').textContent = fmtRange(r);
+    $('#rangeLbl').textContent = si.locked ? '🔒 ล็อก' : (r < 0 ? 'ทั้งโลก' : 'วงไมค์');
+    box.classList.toggle('locked', !!si.locked);
+    box.classList.toggle('global', r < 0 && !si.locked);
+    $('#rangeDown').disabled = !!si.locked || (r >= 0 && r <= 2);
+    $('#rangeUp').disabled = !!si.locked || r < 0 || r >= max;
+    $('#rangeVal').disabled = !!si.locked;
+  }
+
+  const admin = !!(si && si.admin);
+  $('#adminBtn').classList.toggle('is-on', admin);
+  $('#adminBtn').setAttribute('aria-pressed', String(adminOpen));
+  $('#adminPanel').hidden = !adminOpen;
+  $('#adminLogin').hidden = admin;
+  $('#adminTools').hidden = !admin;
+  $('#adminLogout').hidden = !admin;
+  if (!admin && si && !si.adminEnabled && !$('#adminErr').textContent) {
+    $('#adminErr').textContent = 'เซิร์ฟเวอร์ยังไม่ได้ตั้งรหัสแอดมิน';
+  }
+  if (admin) {
+    $('#globalBtn').setAttribute('aria-pressed', String(si.range < 0));
+    $('#globalState').textContent = si.range < 0 ? 'เปิด' : 'ปิด';
+    $('#baseVal').textContent = String(Math.round(si.base));
+    $('#baseAuto').disabled = !si.override;
+  }
+
+  const notes = [];
+  if (smutedMe) notes.push('แอดมินปิดไมค์คุณอยู่');
+  else if (gameMuted) notes.push('ไมค์ถูกปิดในเกม');
+  if (hearOffInGame) notes.push('คุณปิดหูฟังในเกม');
+  if (si && si.locked) notes.push('วงไมค์ถูกตั้งโดยแอดมิน');
+  const n = $('#notice');
+  n.hidden = notes.length === 0;
+  n.textContent = notes.join(' · ');
+}
+
+async function sendRange(value) {
+  if (!session) return;
+  if (selfInfo) selfInfo.range = value === null ? selfInfo.base : value; // optimistic; the server confirms
+  renderControls();
+  try { await api('/api/range', { token: session.token, range: value }); } catch (e) { /* resynced by the next positions event */ }
+}
+
+function stepRange(dir) {
+  const si = selfInfo;
+  if (!si || si.locked) return;
+  const r = si.range;
+  if (r < 0) { if (dir < 0) sendRange(null); return; } // leave "whole world"
+  const max = si.admin ? 1000 : si.cap;
+  sendRange(dir > 0 ? Math.min(max, r + stepFor(r)) : Math.max(2, r - stepFor(r - 1)));
+}
+
+async function adminLogin() {
+  if (!session) return;
+  const pw = $('#adminPw').value;
+  if (!pw) { $('#adminErr').textContent = 'กรอกรหัสแอดมิน'; return; }
+  $('#adminErr').textContent = '';
+  $('#adminPwBtn').disabled = true;
+  try {
+    const res = await api('/api/admin/login', { token: session.token, password: pw });
+    if (res.ok) {
+      $('#adminPw').value = '';
+      if (selfInfo) selfInfo.admin = true;
+    } else {
+      $('#adminErr').textContent = res.data.message || 'ปลดล็อกไม่สำเร็จ';
+    }
+  } catch (e) {
+    $('#adminErr').textContent = 'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้';
+  }
+  $('#adminPwBtn').disabled = false;
+  renderControls();
+}
+
+function adminAction(action, target, value) {
+  if (!session) return;
+  api('/api/admin/action', { token: session.token, action, target, value }).catch(() => {});
 }
 
 function makeRow(key) {
@@ -460,9 +581,22 @@ function makeRow(key) {
     userVolume.set(key, Number(slider.value) / 100);
     updateAudio();
   });
-  el.append(dot, info, slider);
+  const actions = document.createElement('div');
+  actions.className = 'actions';
+  actions.hidden = true;
+  const muteBtn = document.createElement('button');
+  muteBtn.addEventListener('click', () => adminAction('mute', key, !muteBtn.classList.contains('on')));
+  const globeBtn = document.createElement('button');
+  globeBtn.className = 'globe';
+  globeBtn.textContent = '🌍 ทั้งโลก';
+  globeBtn.addEventListener('click', () => adminAction('player_range', key, globeBtn.classList.contains('on') ? null : -1));
+  const resetBtn = document.createElement('button');
+  resetBtn.textContent = '↺ รีเซ็ต';
+  resetBtn.addEventListener('click', () => adminAction('reset_player', key));
+  actions.append(muteBtn, globeBtn, resetBtn);
+  el.append(dot, info, slider, actions);
   $('#players').append(el);
-  const row = { el, dot, nameEl, meta };
+  const row = { el, dot, nameEl, meta, actions, muteBtn, globeBtn };
   rows.set(key, row);
   return row;
 }
@@ -471,7 +605,7 @@ function renderUI() {
   if (!session) return;
   const me = positions.get(session.name.toLowerCase());
   $('#status').textContent = me ? 'ในเกม · ' + prettyDim(me.dim) : 'ยังไม่ได้อยู่ในเกม';
-  $('#meDot').classList.toggle('speaking', !muted && !gameMuted && localAnalyser && level(localAnalyser) > 0.04);
+  $('#meDot').classList.toggle('speaking', !micOff() && localAnalyser && level(localAnalyser) > 0.04);
 
   const seen = new Set();
   positions.forEach((p, key) => {
@@ -488,9 +622,14 @@ function renderUI() {
     } else if (!me) {
       meta = 'เชื่อมต่อแล้ว';
     } else if (p.mic === false) {
-      meta = 'ปิดไมค์ในเกม';
+      meta = p.smuted ? 'ถูกแอดมินปิดไมค์' : 'ปิดไมค์ในเกม';
     } else if (me.hear === false) {
       meta = 'คุณปิดหูฟังในเกม';
+    } else if (deafened) {
+      meta = 'คุณปิดหูอยู่';
+    } else if (Number(p.range) < 0) {
+      meta = '📣 พูดทั้งโลก';
+      near = true;
     } else if (a.mode === 'call') {
       meta = '📞 อยู่ในสาย';
       near = true;
@@ -503,6 +642,10 @@ function renderUI() {
     }
     row.nameEl.textContent = p.name;
     row.meta.textContent = meta;
+    row.actions.hidden = !(selfInfo && selfInfo.admin);
+    row.muteBtn.classList.toggle('on', !!p.smuted);
+    row.muteBtn.textContent = p.smuted ? '🔇 ปิดไมค์อยู่' : '🔇 ปิดไมค์';
+    row.globeBtn.classList.toggle('on', !!p.forced && Number(p.range) < 0);
     row.el.classList.toggle('offline', !connected);
     row.el.classList.toggle('near', near);
     row.dot.classList.toggle('speaking', connected && peer.analyser && level(peer.analyser) > 0.04 && near);
@@ -529,13 +672,40 @@ function releaseWakeLock() {
 $('#joinBtn').addEventListener('click', start);
 $('#gamertag').addEventListener('keydown', (e) => { if (e.key === 'Enter') start(); });
 $('#leaveBtn').addEventListener('click', leave);
-$('#muteBtn').addEventListener('click', () => setMuted(!muted));
+$('#micBtn').addEventListener('click', () => {
+  if (gameMuted) return;
+  if (deafened) setDeafened(false); // like Discord: un-deafen first
+  else setMuted(!muted);
+});
+$('#deafBtn').addEventListener('click', () => setDeafened(!deafened));
+$('#rangeDown').addEventListener('click', () => stepRange(-1));
+$('#rangeUp').addEventListener('click', () => stepRange(1));
+$('#rangeVal').addEventListener('click', () => { if (selfInfo && !selfInfo.locked) sendRange(null); });
+$('#adminBtn').addEventListener('click', () => { adminOpen = !adminOpen; renderControls(); });
+$('#adminPwBtn').addEventListener('click', adminLogin);
+$('#adminPw').addEventListener('keydown', (e) => { if (e.key === 'Enter') adminLogin(); });
+$('#adminLogout').addEventListener('click', async () => {
+  if (session) await api('/api/admin/logout', { token: session.token }).catch(() => {});
+  if (selfInfo) selfInfo.admin = false;
+  renderControls();
+});
+$('#globalBtn').addEventListener('click', () => { if (selfInfo) sendRange(selfInfo.range < 0 ? null : -1); });
+$('#baseDown').addEventListener('click', () => {
+  if (selfInfo) adminAction('base_range', '', Math.max(2, Math.round(selfInfo.base) - stepFor(selfInfo.base - 1)));
+});
+$('#baseUp').addEventListener('click', () => {
+  if (selfInfo) adminAction('base_range', '', Math.min(1000, Math.round(selfInfo.base) + stepFor(selfInfo.base)));
+});
+$('#baseAuto').addEventListener('click', () => adminAction('base_range', '', null));
 $('#masterVol').addEventListener('input', (e) => {
   masterVol = Number(e.target.value) / 100;
   if (masterGain) masterGain.gain.value = masterVol;
 });
 document.addEventListener('keydown', (e) => {
-  if (e.key.toLowerCase() === 'm' && session && document.activeElement.tagName !== 'INPUT') setMuted(!muted);
+  if (!session || document.activeElement.tagName === 'INPUT') return;
+  const k = e.key.toLowerCase();
+  if (k === 'm') $('#micBtn').click();
+  if (k === 'd') $('#deafBtn').click();
 });
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && session) {

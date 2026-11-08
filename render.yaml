@@ -10,3 +10,5 @@ services:
     envVars:
       - key: VC_API_KEY
         generateValue: true
+      - key: VC_ADMIN_KEY
+        generateValue: true

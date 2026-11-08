@@ -8,6 +8,10 @@ Position sources (either one works):
 
 App side:
   POST /api/join, GET /events?token=, POST /api/signal, POST /api/ping, GET /api/config, GET /
+  POST /api/range            a player changes their own mic range (blocks; -1 = whole world, admins only)
+  POST /api/admin/login      unlock admin powers with VC_ADMIN_KEY
+  POST /api/admin/logout
+  POST /api/admin/action     mute | player_range | base_range | reset_player
 
 Env vars:
   PORT              default 8080
@@ -15,6 +19,7 @@ Env vars:
   VC_OPEN_UPDATE    "1" = also accept /update_coords with no secret (NOT secure), default 0
   VC_MAX_DISTANCE   blocks, default 32 (the addon's range setting overrides it)
   VC_WHISPER        range factor when a player is sneaking, default 0.5
+  VC_ADMIN_KEY      password that unlocks the admin panel in the app (admin disabled when unset)
   VC_STUN           comma-separated STUN urls (default: Google STUN)
   VC_TURN_URL       optional TURN url, e.g. turn:example.com:3478
   VC_TURN_USER / VC_TURN_PASS
@@ -42,6 +47,12 @@ API_KEY = os.environ.get("VC_API_KEY", "change-me")
 OPEN_UPDATE = os.environ.get("VC_OPEN_UPDATE", "0") == "1"
 MAX_DISTANCE = float(os.environ.get("VC_MAX_DISTANCE", "32"))
 WHISPER = float(os.environ.get("VC_WHISPER", "0.5"))
+ADMIN_KEY = os.environ.get("VC_ADMIN_KEY", "")
+GLOBAL = -1.0            # range value meaning "the whole world" (every dimension, full volume)
+RANGE_MIN = 2.0
+RANGE_MAX = 1000.0
+FAIL_LIMIT = 10          # wrong admin passwords per window per IP
+FAIL_WINDOW = 300.0
 POSITION_STALE = float(os.environ.get("VC_STALE_SECONDS", "6"))
 SESSION_TIMEOUT = 25.0  # no ping/signal for this long -> session is dead
 
@@ -61,7 +72,11 @@ def ice_servers():
 
 # lowercase name -> {name, x, y, z, ry, dim, mic, hear, bot, range, ts}
 players = {}
-game = {"range": 0.0, "calls": []}  # calls: list of (key1, key2)
+game = {"range": 0.0, "override": 0.0, "calls": []}  # calls: list of (key1, key2)
+prefs = {}      # key -> range the player chose for themselves (blocks, or GLOBAL for admins)
+forced = {}     # key -> range an admin set for that player (blocks, or GLOBAL)
+smuted = set()  # keys an admin muted for everyone
+fails = {}      # ip -> [timestamps of failed admin logins]
 sessions = {}  # token -> session dict
 by_key = {}    # lowercase name -> token
 
@@ -75,7 +90,40 @@ def sse(event, payload):
 
 
 def current_range():
+    """Base range for everybody: the admin override if set, otherwise the addon's setting."""
+    if game["override"] > 0:
+        return game["override"]
     return game["range"] if game["range"] > 0 else MAX_DISTANCE
+
+
+def is_admin_key(key):
+    s = sessions.get(by_key.get(key))
+    return bool(s and s["connected"] and s["admin"])
+
+
+def player_cap():
+    """Highest range a normal (non-admin) player may pick for themselves."""
+    return max(current_range() * 2, RANGE_MIN)
+
+
+def chosen_range(key):
+    """The range a player is speaking at, before the sneaking/whisper factor."""
+    base = current_range()
+    if key in forced:
+        return forced[key]
+    if key in prefs:
+        r = prefs[key]
+        if is_admin_key(key):
+            return r
+        return base if r == GLOBAL else min(r, player_cap())
+    return base
+
+
+def effective_range(key):
+    r = chosen_range(key)
+    if r != GLOBAL and players[key]["sneaking"]:
+        r *= WHISPER
+    return r
 
 
 def positions_payload_for(key):
@@ -84,12 +132,25 @@ def positions_payload_for(key):
     for a, b in game["calls"]:
         if key in (a, b) and a in players and b in players:
             pairs.append([players[a]["name"], players[b]["name"]])
+    out = []
+    for k, p in players.items():
+        out.append({
+            "name": p["name"], "x": p["x"], "y": p["y"], "z": p["z"], "ry": p["ry"], "dim": p["dim"],
+            "mic": p["mic"] and k not in smuted, "hear": p["hear"], "bot": p["bot"],
+            "range": effective_range(k), "smuted": k in smuted, "forced": k in forced,
+        })
     return {
-        "players": [
-            {k: p[k] for k in ("name", "x", "y", "z", "ry", "dim", "mic", "hear", "bot", "range")}
-            for p in players.values()
-        ],
+        "players": out,
         "calls": pairs,
+        "self": {
+            "admin": is_admin_key(key),
+            "range": chosen_range(key) if key in players else current_range(),
+            "locked": key in forced,
+            "cap": player_cap(),
+            "base": current_range(),
+            "override": game["override"] > 0,
+            "adminEnabled": bool(ADMIN_KEY),
+        },
     }
 
 
@@ -127,8 +188,6 @@ def is_bot(name):
 def ingest(body, users):
     """Replace the world state from either protocol (the sender always sends everyone online)."""
     now = time.time()
-    base = num(body.get("range"))
-    base = base if base > 0 else MAX_DISTANCE
     snapshot = {}
     for p in users or []:
         if not isinstance(p, dict):
@@ -147,7 +206,7 @@ def ingest(body, users):
             "mic": not flag(p.get("mic_disabled")),
             "hear": not flag(p.get("headphone_disabled")),
             "bot": flag(p.get("bot")) or is_bot(name),
-            "range": base * WHISPER if sneaking else base,
+            "sneaking": sneaking,
             "ts": now,
         }
     players.clear()
@@ -204,7 +263,7 @@ async def update_coords_post(request):
 
 
 async def config_get(request):
-    return JSONResponse({"maxDistance": current_range(), "iceServers": ice_servers()})
+    return JSONResponse({"maxDistance": current_range(), "iceServers": ice_servers(), "adminEnabled": bool(ADMIN_KEY)})
 
 
 def drop_session(token):
@@ -241,7 +300,7 @@ async def join_post(request):
     token = secrets.token_urlsafe(24)
     sessions[token] = {
         "token": token, "name": p["name"], "key": requested,
-        "queue": asyncio.Queue(), "connected": False, "last_seen": time.time(),
+        "queue": asyncio.Queue(), "connected": False, "last_seen": time.time(), "admin": False,
     }
     by_key[requested] = token
     return JSONResponse({"token": token, "name": p["name"], "maxDistance": current_range()})
@@ -297,6 +356,120 @@ async def ping_post(request):
     return JSONResponse({"ok": True})
 
 
+def session_from(body):
+    s = sessions.get(str(body.get("token", "")))
+    return s if s is not None and s["connected"] else None
+
+
+def client_ip(request):
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "?"
+
+
+def too_many_failures(ip):
+    now = time.time()
+    recent = [t for t in fails.get(ip, []) if now - t < FAIL_WINDOW]
+    fails[ip] = recent
+    return len(recent) >= FAIL_LIMIT
+
+
+def clamp_range(v):
+    return min(max(num(v, RANGE_MIN), RANGE_MIN), RANGE_MAX)
+
+
+async def range_post(request):
+    """A player changes their own mic range. null = back to the default."""
+    body = await read_json(request)
+    s = session_from(body)
+    if s is None:
+        return JSONResponse({"error": "bad_token"}, status_code=403)
+    s["last_seen"] = time.time()
+    val = body.get("range")
+    if val is None:
+        prefs.pop(s["key"], None)
+    elif num(val) == GLOBAL:
+        if not s["admin"]:
+            return JSONResponse({"error": "admin_only", "message": "ทั้งโลกใช้ได้เฉพาะแอดมิน"}, status_code=403)
+        prefs[s["key"]] = GLOBAL
+    else:
+        r = clamp_range(val)
+        prefs[s["key"]] = r if s["admin"] else min(r, player_cap())
+    broadcast_positions()
+    return JSONResponse({"ok": True, "range": chosen_range(s["key"])})
+
+
+async def admin_login_post(request):
+    body = await read_json(request)
+    s = session_from(body)
+    if s is None:
+        return JSONResponse({"error": "bad_token"}, status_code=403)
+    if not ADMIN_KEY:
+        return JSONResponse({"error": "admin_disabled",
+                             "message": "เซิร์ฟเวอร์ยังไม่ได้ตั้งรหัสแอดมิน (VC_ADMIN_KEY)"}, status_code=503)
+    ip = client_ip(request)
+    if too_many_failures(ip):
+        return JSONResponse({"error": "rate_limited",
+                             "message": "ลองผิดหลายครั้งเกินไป รอสักครู่แล้วลองใหม่"}, status_code=429)
+    if not hmac.compare_digest(str(body.get("password", "")).encode(), ADMIN_KEY.encode()):
+        fails.setdefault(ip, []).append(time.time())
+        return JSONResponse({"error": "bad_password", "message": "รหัสแอดมินไม่ถูกต้อง"}, status_code=401)
+    s["admin"] = True
+    s["last_seen"] = time.time()
+    broadcast_positions()
+    return JSONResponse({"ok": True})
+
+
+async def admin_logout_post(request):
+    body = await read_json(request)
+    s = session_from(body)
+    if s is None:
+        return JSONResponse({"error": "bad_token"}, status_code=403)
+    s["admin"] = False
+    broadcast_positions()
+    return JSONResponse({"ok": True})
+
+
+async def admin_action_post(request):
+    body = await read_json(request)
+    s = session_from(body)
+    if s is None:
+        return JSONResponse({"error": "bad_token"}, status_code=403)
+    if not s["admin"]:
+        return JSONResponse({"error": "forbidden", "message": "ต้องเป็นแอดมิน"}, status_code=403)
+    s["last_seen"] = time.time()
+    action = str(body.get("action", ""))
+    target = key_of(body.get("target", ""))
+    value = body.get("value")
+
+    if action == "base_range":
+        game["override"] = 0.0 if value in (None, 0) else clamp_range(value)
+    elif action in ("mute", "player_range", "reset_player"):
+        if target not in players:
+            return JSONResponse({"error": "no_such_player", "message": "ไม่พบผู้เล่นคนนี้"}, status_code=404)
+        if action == "mute":
+            if flag(value):
+                smuted.add(target)
+            else:
+                smuted.discard(target)
+        elif action == "player_range":
+            if value is None:
+                forced.pop(target, None)
+            elif num(value) == GLOBAL:
+                forced[target] = GLOBAL
+            else:
+                forced[target] = clamp_range(value)
+        else:  # reset_player
+            forced.pop(target, None)
+            smuted.discard(target)
+            prefs.pop(target, None)
+    else:
+        return JSONResponse({"error": "bad_action"}, status_code=400)
+    broadcast_positions()
+    return JSONResponse({"ok": True})
+
+
 async def janitor():
     while True:
         await asyncio.sleep(2)
@@ -308,6 +481,8 @@ async def janitor():
             broadcast_positions()
         for token in [t for t, s in sessions.items() if not alive(s)]:
             drop_session(token)
+        for ip in [ip for ip, ts in fails.items() if not any(now - t < FAIL_WINDOW for t in ts)]:
+            del fails[ip]
 
 
 @asynccontextmanager
@@ -337,6 +512,10 @@ routes = [
     Route("/api/join", join_post, methods=["POST"]),
     Route("/api/signal", signal_post, methods=["POST"]),
     Route("/api/ping", ping_post, methods=["POST"]),
+    Route("/api/range", range_post, methods=["POST"]),
+    Route("/api/admin/login", admin_login_post, methods=["POST"]),
+    Route("/api/admin/logout", admin_logout_post, methods=["POST"]),
+    Route("/api/admin/action", admin_action_post, methods=["POST"]),
     Route("/events", events_get),
     Mount("/static", app=StaticFiles(directory=str(STATIC)), name="static"),
 ]
