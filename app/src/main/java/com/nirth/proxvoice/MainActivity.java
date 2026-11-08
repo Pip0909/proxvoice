@@ -14,7 +14,11 @@ import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.text.InputType;
+import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
+import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
@@ -26,6 +30,10 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.ProgressBar;
+import android.widget.TextView;
 import android.widget.Toast;
 
 /**
@@ -39,6 +47,8 @@ public class MainActivity extends Activity {
     private static final String KEY_URL = "server_url";
 
     private WebView web;
+    private View loadingView;
+    private TextView loadingText;
     private PermissionRequest pendingWebRequest;
     private boolean dialogOpen = false;
     private boolean overlayWanted = false;
@@ -73,10 +83,18 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(0xFF0F1720);
+
         web = new WebView(this);
         web.setBackgroundColor(0xFF0F1720);
-        setContentView(web, new ViewGroup.LayoutParams(
+        root.addView(web, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        loadingView = buildLoadingView();
+        root.addView(loadingView, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        setContentView(root);
 
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
@@ -88,8 +106,14 @@ public class MainActivity extends Activity {
 
         web.setWebViewClient(new WebViewClient() {
             @Override
+            public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+                showLoading("กำลังเชื่อมต่อเซิร์ฟเวอร์…\n(ครั้งแรกอาจช้า ถ้า Render เพิ่งตื่น)");
+            }
+
+            @Override
             public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
                 if (request.isForMainFrame()) {
+                    hideLoading();
                     askServer("เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ ตรวจสอบที่อยู่แล้วลองใหม่");
                 }
             }
@@ -97,6 +121,8 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 injectBridgeHelper();
+                // Small delay so the HTML paint isn't a white flash before UI appears
+                view.postDelayed(() -> hideLoading(), 250);
             }
         });
 
@@ -124,10 +150,59 @@ public class MainActivity extends Activity {
 
         String url = prefs().getString(KEY_URL, "");
         if (url.isEmpty()) {
+            hideLoading();
             askServer(null);
         } else {
-            web.loadUrl(url);
+            openServer(url);
         }
+    }
+
+    private View buildLoadingView() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setGravity(Gravity.CENTER);
+        box.setBackgroundColor(0xFF0F1720);
+        box.setPadding(dp(24), dp(24), dp(24), dp(24));
+
+        ProgressBar spin = new ProgressBar(this);
+        box.addView(spin, new LinearLayout.LayoutParams(dp(48), dp(48)));
+
+        loadingText = new TextView(this);
+        loadingText.setText("กำลังเชื่อมต่อเซิร์ฟเวอร์…");
+        loadingText.setTextColor(0xFFE8EEF5);
+        loadingText.setTextSize(16);
+        loadingText.setGravity(Gravity.CENTER);
+        loadingText.setPadding(0, dp(18), 0, 0);
+        box.addView(loadingText, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        TextView sub = new TextView(this);
+        sub.setText("Proximity Voice");
+        sub.setTextColor(0xFF8DA0B4);
+        sub.setTextSize(13);
+        sub.setGravity(Gravity.CENTER);
+        sub.setPadding(0, dp(8), 0, 0);
+        box.addView(sub);
+
+        return box;
+    }
+
+    private void showLoading(String message) {
+        if (loadingText != null && message != null) loadingText.setText(message);
+        if (loadingView != null) loadingView.setVisibility(View.VISIBLE);
+    }
+
+    private void hideLoading() {
+        if (loadingView != null) loadingView.setVisibility(View.GONE);
+    }
+
+    private void openServer(String url) {
+        showLoading("กำลังเชื่อมต่อเซิร์ฟเวอร์…\n(ครั้งแรกอาจช้า ถ้า Render เพิ่งตื่น)");
+        web.loadUrl(url);
+    }
+
+    private int dp(int v) {
+        return Math.round(v * getResources().getDisplayMetrics().density);
     }
 
     private SharedPreferences prefs() {
@@ -192,7 +267,7 @@ public class MainActivity extends Activity {
                         url = "https://" + url;
                     }
                     prefs().edit().putString(KEY_URL, url).apply();
-                    web.loadUrl(url);
+                    openServer(url);
                 })
                 .setNegativeButton("ออก", (d, w) -> {
                     dialogOpen = false;
