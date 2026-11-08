@@ -639,7 +639,7 @@ function renderControls() {
     $('#rangeLbl').textContent = si.locked ? '🔒 ล็อก' : (r < 0 ? 'ทั้งโลก' : 'วงไมค์');
     box.classList.toggle('locked', !!si.locked);
     box.classList.toggle('global', r < 0 && !si.locked);
-    $('#rangeDown').disabled = !!si.locked || (r >= 0 && r <= 2);
+    $('#rangeDown').disabled = !!si.locked || (r >= 0 && r <= 1);
     $('#rangeUp').disabled = !!si.locked || r < 0 || r >= max;
     $('#rangeVal').disabled = !!si.locked;
   }
@@ -679,13 +679,30 @@ async function sendRange(value) {
   try { await api('/api/range', { token: session.token, range: value }); } catch (e) { /* resynced by the next positions event */ }
 }
 
+/** Mic range steps: … 1 → 2 → 4 → 8 → 16 → 32 → … (×2 / ÷2), min 1 */
+function nextPow2Range(r, dir, max) {
+  const cur = Math.max(1, Math.round(Number(r) || 1));
+  if (dir > 0) {
+    let n = 1;
+    while (n <= cur && n < max) n *= 2;
+    return Math.min(max, n);
+  }
+  // down: previous power of two (or half if already power of two)
+  if (cur <= 1) return 1;
+  let n = 1;
+  while (n * 2 < cur) n *= 2;
+  // if cur is exactly power of 2, go to half; else snap down to n
+  if (n * 2 === cur) return Math.max(1, n);
+  return Math.max(1, n);
+}
+
 function stepRange(dir) {
   const si = selfInfo;
   if (!si || si.locked) return;
   const r = si.range;
   if (r < 0) { if (dir < 0) sendRange(null); return; } // leave "whole world"
   const max = si.admin ? 1000 : si.cap;
-  sendRange(dir > 0 ? Math.min(max, r + stepFor(r)) : Math.max(2, r - stepFor(r - 1)));
+  sendRange(nextPow2Range(r, dir, max));
 }
 
 async function adminLogin() {
