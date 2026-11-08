@@ -27,27 +27,33 @@ public class OverlayService extends Service {
     public static final String ACTION_UPDATE = "com.nirth.proxvoice.OVERLAY_UPDATE";
     public static final String ACTION_TOGGLE_MIC = "com.nirth.proxvoice.TOGGLE_MIC";
     public static final String ACTION_TOGGLE_DEAF = "com.nirth.proxvoice.TOGGLE_DEAF";
+    public static final String ACTION_RANGE_DOWN = "com.nirth.proxvoice.RANGE_DOWN";
+    public static final String ACTION_RANGE_UP = "com.nirth.proxvoice.RANGE_UP";
 
     public static final String EXTRA_NAME = "name";
     public static final String EXTRA_STATUS = "status";
     public static final String EXTRA_MUTED = "muted";
     public static final String EXTRA_DEAFENED = "deafened";
+    public static final String EXTRA_RANGE = "range";
 
     private static final String CHANNEL_ID = "proxvoice_overlay";
     private static final int NOTIF_ID = 42;
     private static final int TAG_MIC = 0x70F10001;
     private static final int TAG_DEAF = 0x70F10002;
+    private static final int TAG_RANGE = 0x70F10003;
 
     private WindowManager windowManager;
     private View overlayView;
     private WindowManager.LayoutParams params;
     private TextView nameView;
     private TextView statusView;
+    private TextView rangeView;
 
     private String displayName = "Proximity Voice";
     private String statusText = "Connected";
     private boolean muted = false;
     private boolean deafened = false;
+    private String rangeLabel = "–";
 
     private int startX, startY;
     private float touchX, touchY;
@@ -80,6 +86,10 @@ public class OverlayService extends Service {
             }
             muted = intent.getBooleanExtra(EXTRA_MUTED, muted);
             deafened = intent.getBooleanExtra(EXTRA_DEAFENED, deafened);
+            if (intent.hasExtra(EXTRA_RANGE)) {
+                String r = intent.getStringExtra(EXTRA_RANGE);
+                if (r != null && !r.isEmpty()) rangeLabel = r;
+            }
             applyUi();
             updateNotification();
         }
@@ -153,11 +163,17 @@ public class OverlayService extends Service {
 
         TextView mic = textBtn("🎙");
         TextView deaf = textBtn("🎧");
+        TextView rangeDown = textBtn("−");
+        rangeView = textBtn(rangeLabel != null ? rangeLabel : "–");
+        rangeView.setTextSize(12);
+        TextView rangeUp = textBtn("+");
         TextView open = textBtn("↗");
         TextView close = textBtn("✕");
 
         mic.setOnClickListener(v -> sendBroadcastAction(ACTION_TOGGLE_MIC));
         deaf.setOnClickListener(v -> sendBroadcastAction(ACTION_TOGGLE_DEAF));
+        rangeDown.setOnClickListener(v -> sendBroadcastAction(ACTION_RANGE_DOWN));
+        rangeUp.setOnClickListener(v -> sendBroadcastAction(ACTION_RANGE_UP));
         open.setOnClickListener(v -> {
             Intent i = new Intent(this, MainActivity.class);
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
@@ -167,10 +183,14 @@ public class OverlayService extends Service {
 
         root.setTag(TAG_MIC, mic);
         root.setTag(TAG_DEAF, deaf);
+        root.setTag(TAG_RANGE, rangeView);
 
         root.addView(meta);
         root.addView(mic);
         root.addView(deaf);
+        root.addView(rangeDown);
+        root.addView(rangeView);
+        root.addView(rangeUp);
         root.addView(open);
         root.addView(close);
 
@@ -236,6 +256,14 @@ public class OverlayService extends Service {
                 deaf.setText(deafened ? "🙉" : "🎧");
                 deaf.setBackgroundColor(deafened ? 0xFFFF5D6C : 0xFF2B2D31);
             }
+            Object rangeObj = overlayView.getTag(TAG_RANGE);
+            if (rangeObj instanceof TextView) {
+                TextView rv = (TextView) rangeObj;
+                rv.setText(rangeLabel != null && !rangeLabel.isEmpty() ? rangeLabel : "–");
+            }
+        }
+        if (rangeView != null) {
+            rangeView.setText(rangeLabel != null && !rangeLabel.isEmpty() ? rangeLabel : "–");
         }
     }
 
