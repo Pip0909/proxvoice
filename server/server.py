@@ -144,7 +144,9 @@ def positions_payload_for(key):
         "calls": pairs,
         "self": {
             "admin": is_admin_key(key),
-            "range": chosen_range(key) if key in players else current_range(),
+            # Always respect the player's chosen range (even while Waiting for Minecraft).
+            # Previously this fell back to current_range() when offline, which pinned the UI at 32.
+            "range": chosen_range(key),
             "locked": key in forced,
             "cap": player_cap(),
             "base": current_range(),
