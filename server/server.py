@@ -57,7 +57,7 @@ ADMIN_NAMES = {
 }
 GLOBAL = -1.0            # range value meaning "the whole world" (every dimension, full volume)
 RANGE_MIN = 1.0
-RANGE_MAX = 1000.0
+RANGE_MAX = 512.0
 FAIL_LIMIT = 10          # wrong admin passwords per window per IP
 FAIL_WINDOW = 300.0
 POSITION_STALE = float(os.environ.get("VC_STALE_SECONDS", "6"))
@@ -123,8 +123,8 @@ def promote_session_admin(s):
 
 
 def player_cap():
-    """Highest range a normal (non-admin) player may pick for themselves."""
-    return max(current_range() * 2, RANGE_MIN)
+    """Highest range a normal player may pick (power-of-two steps up to RANGE_MAX)."""
+    return RANGE_MAX
 
 
 def chosen_range(key):
