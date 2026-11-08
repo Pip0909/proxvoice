@@ -133,3 +133,151 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .player .actions button { padding: 6px 12px; font-size: 14px; background: var(--bg); border: 1px solid var(--line); }
 .player .actions button.on { border-color: var(--danger); color: var(--danger); }
 .player .actions button.on.globe { border-color: var(--accent); color: var(--accent); }
+
+/* ---- Discord-style floating panel ---- */
+.float-panel {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  z-index: 1000;
+  max-width: 420px;
+  margin: 0 auto;
+  background: #1e1f22;
+  border: 1px solid #2b2d31;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, .55), 0 0 0 1px rgba(255, 255, 255, .04);
+  user-select: none;
+  transition: box-shadow .15s ease;
+}
+.float-panel.dragging {
+  box-shadow: 0 16px 48px rgba(0, 0, 0, .7);
+  opacity: .95;
+}
+.float-drag {
+  display: flex;
+  justify-content: center;
+  padding: 6px 0 2px;
+  cursor: grab;
+}
+.float-panel.dragging .float-drag { cursor: grabbing; }
+.float-grip {
+  width: 36px;
+  height: 4px;
+  border-radius: 99px;
+  background: #3f4147;
+}
+.float-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px 12px;
+}
+.float-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+.float-meta { min-width: 0; }
+.float-name {
+  font-weight: 600;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.float-status {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.float-status.waiting { color: #f0b429; }
+.float-status.connected { color: var(--accent); }
+.float-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.float-btn {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: 50%;
+  background: #2b2d31;
+  border: 1px solid #3f4147;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background .12s, border-color .12s, transform .08s;
+}
+.float-btn:active { transform: scale(.94); }
+.float-btn .float-ico { font-size: 18px; line-height: 1; }
+.float-btn.is-off {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+.float-btn.danger {
+  background: #3a1f22;
+  border-color: #5c2b31;
+}
+.float-btn.danger:hover,
+.float-btn.danger:active {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+.float-btn.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+}
+.float-extra {
+  border-top: 1px solid #2b2d31;
+  padding: 10px 14px 12px;
+  display: grid;
+  gap: 10px;
+}
+.float-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.float-row input[type=range] {
+  flex: 1;
+  accent-color: var(--accent);
+}
+.float-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: #2b2d31;
+  border-radius: 10px;
+  padding: 4px 8px;
+}
+.float-stepper button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 8px;
+  background: #1e1f22;
+  font-size: 16px;
+  line-height: 1;
+}
+.float-stepper span {
+  min-width: 36px;
+  text-align: center;
+  font-weight: 700;
+  color: var(--text);
+  font-size: 14px;
+}
+body.in-room {
+  padding-bottom: calc(110px + env(safe-area-inset-bottom));
+}
