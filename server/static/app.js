@@ -83,7 +83,45 @@ function show(which) {
   const fp = $('#floatPanel');
   if (fp) fp.hidden = which !== 'room';
   document.body.classList.toggle('in-room', which === 'room');
-  if (which === 'room') syncFloatPanel();
+  if (which === 'room') {
+    syncFloatPanel();
+    nativeOverlayShow();
+  } else {
+    nativeOverlayHide();
+  }
+}
+
+/** Android native mobile voice overlay (draw over other apps). */
+function nativeOverlayAvailable() {
+  return !!(window.ProxVoiceNative || (window.ProxVoiceOverlay && window.ProxVoiceOverlay.available && window.ProxVoiceOverlay.available()));
+}
+function nativeOverlayShow() {
+  try {
+    const name = (session && session.name) || ($('#meName') && $('#meName').textContent) || '';
+    const st = ($('#status') && $('#status').textContent) || 'Connected';
+    if (window.ProxVoiceNative) {
+      window.ProxVoiceNative.showOverlay(name, st, !!micOff(), !!deafened);
+    } else if (window.ProxVoiceOverlay && window.ProxVoiceOverlay.show) {
+      window.ProxVoiceOverlay.show(name, st, !!micOff(), !!deafened);
+    }
+  } catch (e) { /* not in native shell */ }
+}
+function nativeOverlayUpdate() {
+  try {
+    const name = (session && session.name) || ($('#meName') && $('#meName').textContent) || '';
+    const st = ($('#status') && $('#status').textContent) || '';
+    if (window.ProxVoiceNative) {
+      window.ProxVoiceNative.updateOverlay(name, st, !!micOff(), !!deafened);
+    } else if (window.ProxVoiceOverlay && window.ProxVoiceOverlay.update) {
+      window.ProxVoiceOverlay.update(name, st, !!micOff(), !!deafened);
+    }
+  } catch (e) { /* ignore */ }
+}
+function nativeOverlayHide() {
+  try {
+    if (window.ProxVoiceNative) window.ProxVoiceNative.hideOverlay();
+    else if (window.ProxVoiceOverlay && window.ProxVoiceOverlay.hide) window.ProxVoiceOverlay.hide();
+  } catch (e) { /* ignore */ }
 }
 
 /** Update the status line under the player's name. */
@@ -125,6 +163,7 @@ function updateStatusUI(status, name) {
     el.textContent = status || '';
     setFloatStatus(status || '', '');
   }
+  nativeOverlayUpdate();
 }
 
 function setFloatStatus(text, cls) {
@@ -175,6 +214,7 @@ function syncFloatPanel() {
   const mv = $('#masterVol');
   const fv = $('#floatVol');
   if (mv && fv && document.activeElement !== fv) fv.value = mv.value;
+  nativeOverlayUpdate();
 }
 
 // ---------- start / leave ----------
@@ -550,6 +590,7 @@ function setMuted(m) {
   muted = m;
   if (localStream) localStream.getAudioTracks().forEach((t) => { t.enabled = !micOff(); });
   renderControls();
+  nativeOverlayUpdate();
 }
 
 function setDeafened(d) {
