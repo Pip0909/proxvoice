@@ -289,6 +289,46 @@ async def config_get(request):
     return JSONResponse({"maxDistance": current_range(), "iceServers": ice_servers(), "adminEnabled": bool(ADMIN_KEY)})
 
 
+async def app_version_get(request):
+    """Latest Android APK version — the native shell polls this on launch."""
+    data = {
+        "versionCode": 6,
+        "versionName": "0.3.3",
+        "apkUrl": "https://github.com/Pip0909/proxvoice/releases/latest/download/ProximityVoice.apk",
+        "releaseUrl": "https://github.com/Pip0909/proxvoice/releases/latest",
+        "notes": "อัปเดตแอปเพื่อฟีเจอร์ใหม่และความเสถียร",
+        "force": False,
+    }
+    # Optional overrides from Render env (no redeploy of logic needed for version bumps)
+    if os.environ.get("APP_VERSION_CODE"):
+        try:
+            data["versionCode"] = int(os.environ["APP_VERSION_CODE"])
+        except ValueError:
+            pass
+    if os.environ.get("APP_VERSION_NAME"):
+        data["versionName"] = os.environ["APP_VERSION_NAME"]
+    if os.environ.get("APP_APK_URL"):
+        data["apkUrl"] = os.environ["APP_APK_URL"]
+    if os.environ.get("APP_RELEASE_URL"):
+        data["releaseUrl"] = os.environ["APP_RELEASE_URL"]
+    if os.environ.get("APP_UPDATE_NOTES"):
+        data["notes"] = os.environ["APP_UPDATE_NOTES"]
+    if os.environ.get("APP_FORCE_UPDATE", "").lower() in ("1", "true", "yes"):
+        data["force"] = True
+    # Prefer static file if present (easy to edit / CI can overwrite)
+    path = STATIC / "app-version.json"
+    if path.is_file():
+        try:
+            file_data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(file_data, dict):
+                data.update({k: file_data[k] for k in (
+                    "versionCode", "versionName", "apkUrl", "releaseUrl", "notes", "force"
+                ) if k in file_data})
+        except Exception:
+            pass
+    return JSONResponse(data, headers={"Cache-Control": "no-cache"})
+
+
 def drop_session(token):
     s = sessions.pop(token, None)
     if s is None:
@@ -567,6 +607,7 @@ routes = [
     Route("/sw.js", static_file("sw.js", "application/javascript", no_cache=True)),
     Route("/manifest.webmanifest", static_file("manifest.webmanifest", "application/manifest+json")),
     Route("/api/config", config_get),
+    Route("/api/app-version", app_version_get),
     Route("/api/positions", positions_post, methods=["POST"]),
     Route("/update_coords", update_coords_post, methods=["POST"]),
     Route("/s/{secret}/update_coords", update_coords_post, methods=["POST"]),
