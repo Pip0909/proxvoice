@@ -95,14 +95,19 @@ function show(which) {
 function nativeOverlayAvailable() {
   return !!(window.ProxVoiceNative || (window.ProxVoiceOverlay && window.ProxVoiceOverlay.available && window.ProxVoiceOverlay.available()));
 }
+function nativeRangeLabel() {
+  const el = $('#rangeNum') || $('#floatRangeNum');
+  return (el && el.textContent) ? el.textContent : '–';
+}
 function nativeOverlayShow() {
   try {
     const name = (session && session.name) || ($('#meName') && $('#meName').textContent) || '';
     const st = ($('#status') && $('#status').textContent) || 'Connected';
+    const range = nativeRangeLabel();
     if (window.ProxVoiceNative) {
-      window.ProxVoiceNative.showOverlay(name, st, !!micOff(), !!deafened);
+      window.ProxVoiceNative.showOverlay(name, st, !!micOff(), !!deafened, range);
     } else if (window.ProxVoiceOverlay && window.ProxVoiceOverlay.show) {
-      window.ProxVoiceOverlay.show(name, st, !!micOff(), !!deafened);
+      window.ProxVoiceOverlay.show(name, st, !!micOff(), !!deafened, range);
     }
   } catch (e) { /* not in native shell */ }
 }
@@ -110,10 +115,11 @@ function nativeOverlayUpdate() {
   try {
     const name = (session && session.name) || ($('#meName') && $('#meName').textContent) || '';
     const st = ($('#status') && $('#status').textContent) || '';
+    const range = nativeRangeLabel();
     if (window.ProxVoiceNative) {
-      window.ProxVoiceNative.updateOverlay(name, st, !!micOff(), !!deafened);
+      window.ProxVoiceNative.updateOverlay(name, st, !!micOff(), !!deafened, range);
     } else if (window.ProxVoiceOverlay && window.ProxVoiceOverlay.update) {
-      window.ProxVoiceOverlay.update(name, st, !!micOff(), !!deafened);
+      window.ProxVoiceOverlay.update(name, st, !!micOff(), !!deafened, range);
     }
   } catch (e) { /* ignore */ }
 }
