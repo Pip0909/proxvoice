@@ -294,6 +294,43 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onPause() {
+        super.onPause();
+        // Keep voice session + floating overlay while user is in Minecraft
+        if (overlayWanted && canDrawOverlays()) {
+            Intent i = new Intent(this, OverlayService.class);
+            i.setAction(OverlayService.ACTION_SHOW);
+            i.putExtra(OverlayService.EXTRA_NAME, "Proximity Voice");
+            i.putExtra(OverlayService.EXTRA_STATUS, "In game");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(i);
+            } else {
+                startService(i);
+            }
+        }
+        if (web != null) {
+            web.evaluateJavascript(
+                    "(function(){try{if(window.ProxVoiceNative&&document.getElementById('status')){"
+                            + "var n=(document.getElementById('meName')||{}).textContent||'';"
+                            + "var s=(document.getElementById('status')||{}).textContent||'';"
+                            + "var m=!!(document.getElementById('micBtn')&&document.getElementById('micBtn').classList.contains('is-off'));"
+                            + "var d=!!(document.getElementById('deafBtn')&&document.getElementById('deafBtn').classList.contains('is-off'));"
+                            + "ProxVoiceNative.updateOverlay(n,s,m,d);}}catch(e){}})();",
+                    null);
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (web != null) {
+            web.evaluateJavascript(
+                    "(function(){try{if(window.audioCtx&&window.audioCtx.state==='suspended')window.audioCtx.resume();}catch(e){}})();",
+                    null);
+        }
+    }
+
+    @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
         if (keyCode == KeyEvent.KEYCODE_BACK && web != null && web.canGoBack()) {
             web.goBack();
