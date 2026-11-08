@@ -105,6 +105,51 @@
       <p id="connNote" class="hint"></p>
     </section>
   </main>
+
+  <!-- Discord-style floating voice panel -->
+  <div id="floatPanel" class="float-panel" hidden>
+    <div class="float-drag" id="floatDrag" title="ลากย้ายตำแหน่ง">
+      <span class="float-grip" aria-hidden="true"></span>
+    </div>
+    <div class="float-body">
+      <div class="float-user">
+        <span id="floatDot" class="dot"></span>
+        <div class="float-meta">
+          <div id="floatName" class="float-name">—</div>
+          <div id="floatStatus" class="float-status">Waiting…</div>
+        </div>
+      </div>
+      <div class="float-actions" role="toolbar" aria-label="ควบคุมเสียงลอย">
+        <button id="floatMic" class="float-btn" title="เปิด/ปิดไมค์ (M)" aria-pressed="false">
+          <span class="float-ico" id="floatMicIcon">🎙️</span>
+        </button>
+        <button id="floatDeaf" class="float-btn" title="ปิดหู (D)" aria-pressed="false">
+          <span class="float-ico" id="floatDeafIcon">🎧</span>
+        </button>
+        <button id="floatLeave" class="float-btn danger" title="ออก">
+          <span class="float-ico">📞</span>
+        </button>
+        <button id="floatExpand" class="float-btn ghost" title="ขยาย/ย่อ" aria-pressed="false">
+          <span class="float-ico" id="floatExpandIcon">▴</span>
+        </button>
+      </div>
+    </div>
+    <div id="floatExtra" class="float-extra" hidden>
+      <div class="float-row">
+        <span>เสียงรวม</span>
+        <input id="floatVol" type="range" min="0" max="150" value="100">
+      </div>
+      <div class="float-row">
+        <span>วงไมค์</span>
+        <div class="float-stepper">
+          <button id="floatRangeDown" type="button">−</button>
+          <span id="floatRangeNum">–</span>
+          <button id="floatRangeUp" type="button">+</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="/static/app.js"></script>
 </body>
 </html>
