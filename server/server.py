@@ -56,7 +56,7 @@ ADMIN_NAMES = {
     if n.strip()
 }
 GLOBAL = -1.0            # range value meaning "the whole world" (every dimension, full volume)
-RANGE_MIN = 2.0
+RANGE_MIN = 1.0
 RANGE_MAX = 1000.0
 FAIL_LIMIT = 10          # wrong admin passwords per window per IP
 FAIL_WINDOW = 300.0
