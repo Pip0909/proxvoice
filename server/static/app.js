@@ -639,13 +639,15 @@ function renderControls() {
   const box = $('#rangeBox');
   if (si) {
     const r = si.range;
-    const max = Math.min(512, si.admin ? 512 : (si.cap || 512));
+    const max = Math.min(512, si.cap || 512);
     $('#rangeNum').textContent = fmtRange(r);
     $('#rangeLbl').textContent = si.locked ? '🔒 ล็อก' : (r < 0 ? 'ทั้งโลก' : 'วงไมค์');
     box.classList.toggle('locked', !!si.locked);
     box.classList.toggle('global', r < 0 && !si.locked);
+    // −: ปิดเฉพาะตอนอยู่ที่ 1 (โหมดทั้งโลกกด − กลับ 512 ได้)
     $('#rangeDown').disabled = !!si.locked || (r >= 0 && r <= 1);
-    $('#rangeUp').disabled = !!si.locked || r < 0 || r >= max;
+    // +: คนทั่วไปหยุดที่ 512 / แอดมินที่ 512 กดต่อได้ → ทั้งโลก / โหมดทั้งโลกปิดปุ่ม +
+    $('#rangeUp').disabled = !!si.locked || r < 0 || (r >= max && !si.admin);
     $('#rangeVal').disabled = !!si.locked;
   }
 
@@ -719,17 +721,26 @@ function stepRange(dir) {
   const si = selfInfo;
   if (!si || si.locked) return;
   const r = si.range;
-  if (r < 0) { if (dir < 0) sendRange(null); return; } // leave "whole world"
   const steps = rangeSteps();
-  const max = si.admin ? 512 : Math.min(512, si.cap || 512);
+  const maxStep = 512;
+  // Admin whole-world mode: − กลับไป 512, + ไม่ทำอะไร
+  if (r < 0) {
+    if (dir < 0) sendRange(maxStep);
+    return;
+  }
   const cur = nearestRangeStep(r);
   let idx = steps.indexOf(cur);
   if (idx < 0) idx = 0;
-  idx = dir > 0 ? Math.min(steps.length - 1, idx + 1) : Math.max(0, idx - 1);
-  let next = steps[idx];
-  if (next > max) next = max;
-  if (next < 1) next = 1;
-  sendRange(next);
+  if (dir > 0) {
+    if (idx >= steps.length - 1) {
+      // ถึง 512 แล้ว — แอดมินกด + อีกครั้ง = ได้ยินทั้งโลก
+      if (si.admin) sendRange(-1);
+      return;
+    }
+    sendRange(steps[idx + 1]);
+  } else {
+    sendRange(steps[Math.max(0, idx - 1)]);
+  }
 }
 
 async function adminLogin() {
