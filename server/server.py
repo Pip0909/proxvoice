@@ -20,6 +20,7 @@ Env vars:
   VC_MAX_DISTANCE   blocks, default 32 (the addon's range setting overrides it)
   VC_WHISPER        range factor when a player is sneaking, default 0.5
   VC_ADMIN_KEY      password that unlocks the admin panel in the app (admin disabled when unset)
+  VC_ADMIN_NAMES    comma-separated gamertags that always get voice-admin (optional)
   VC_STUN           comma-separated STUN urls (default: Google STUN)
   VC_TURN_URL       optional TURN url, e.g. turn:example.com:3478
   VC_TURN_USER / VC_TURN_PASS
@@ -48,6 +49,12 @@ OPEN_UPDATE = os.environ.get("VC_OPEN_UPDATE", "0") == "1"
 MAX_DISTANCE = float(os.environ.get("VC_MAX_DISTANCE", "32"))
 WHISPER = float(os.environ.get("VC_WHISPER", "0.5"))
 ADMIN_KEY = os.environ.get("VC_ADMIN_KEY", "")
+# Comma-separated gamertags that always get voice-admin (in addition to password / in-game OP)
+ADMIN_NAMES = {
+    n.strip().lower()
+    for n in os.environ.get("VC_ADMIN_NAMES", "").split(",")
+    if n.strip()
+}
 GLOBAL = -1.0            # range value meaning "the whole world" (every dimension, full volume)
 RANGE_MIN = 2.0
 RANGE_MAX = 1000.0
@@ -70,12 +77,13 @@ def ice_servers():
     return servers
 
 
-# lowercase name -> {name, x, y, z, ry, dim, mic, hear, bot, range, ts}
+# lowercase name -> {name, x, y, z, ry, dim, mic, hear, bot, range, ts, op}
 players = {}
 game = {"range": 0.0, "override": 0.0, "calls": []}  # calls: list of (key1, key2)
 prefs = {}      # key -> range the player chose for themselves (blocks, or GLOBAL for admins)
 forced = {}     # key -> range an admin set for that player (blocks, or GLOBAL)
 smuted = set()  # keys an admin muted for everyone
+game_ops = set()  # keys reported as Minecraft OP / operator by the addon
 fails = {}      # ip -> [timestamps of failed admin logins]
 sessions = {}  # token -> session dict
 by_key = {}    # lowercase name -> token
@@ -97,8 +105,21 @@ def current_range():
 
 
 def is_admin_key(key):
+    """True if this gamertag currently has voice-admin powers."""
+    if not key:
+        return False
+    if key in ADMIN_NAMES or key in game_ops:
+        return True
     s = sessions.get(by_key.get(key))
-    return bool(s and s["connected"] and s["admin"])
+    return bool(s and s.get("connected") and s.get("admin"))
+
+
+def promote_session_admin(s):
+    """Grant session.admin when name is OP / in VC_ADMIN_NAMES."""
+    if not s:
+        return
+    if s["key"] in ADMIN_NAMES or s["key"] in game_ops:
+        s["admin"] = True
 
 
 def player_cap():
@@ -138,6 +159,8 @@ def positions_payload_for(key):
             "name": p["name"], "x": p["x"], "y": p["y"], "z": p["z"], "ry": p["ry"], "dim": p["dim"],
             "mic": p["mic"] and k not in smuted, "hear": p["hear"], "bot": p["bot"],
             "range": effective_range(k), "smuted": k in smuted, "forced": k in forced,
+            "admin": is_admin_key(k),
+            "op": bool(p.get("op") or k in game_ops or k in ADMIN_NAMES),
         })
     return {
         "players": out,
@@ -151,7 +174,8 @@ def positions_payload_for(key):
             "cap": player_cap(),
             "base": current_range(),
             "override": game["override"] > 0,
-            "adminEnabled": bool(ADMIN_KEY),
+            "adminEnabled": bool(ADMIN_KEY) or bool(ADMIN_NAMES) or key in game_ops,
+            "op": key in game_ops or key in ADMIN_NAMES,
         },
     }
 
@@ -214,6 +238,7 @@ def ingest(body, users):
     """Replace the world state from either protocol (the sender always sends everyone online)."""
     now = time.time()
     snapshot = {}
+    ops = set()
     for p in users or []:
         if not isinstance(p, dict):
             continue
@@ -221,7 +246,17 @@ def ingest(body, users):
         if not name:
             continue
         sneaking = flag(p.get("sneaking"))
-        snapshot[key_of(name)] = {
+        k = key_of(name)
+        is_op = (
+            flag(p.get("op"))
+            or flag(p.get("isOp"))
+            or flag(p.get("operator"))
+            or flag(p.get("is_op"))
+            or str(p.get("permissionLevel", "")).lower() in ("operator", "admin", "2", "3", "4")
+        )
+        if is_op:
+            ops.add(k)
+        snapshot[k] = {
             "name": name,
             "x": num(p.get("x")),
             "y": num(p.get("y")),
@@ -232,10 +267,18 @@ def ingest(body, users):
             "hear": not flag(p.get("headphone_disabled")),
             "bot": flag(p.get("bot")) or is_bot(name),
             "sneaking": sneaking,
+            "op": is_op or k in ADMIN_NAMES,
             "ts": now,
         }
     players.clear()
     players.update(snapshot)
+    game_ops.clear()
+    game_ops.update(ops)
+    game_ops.update(ADMIN_NAMES)
+    # Auto-promote connected voice sessions for OP / listed admins
+    for s in sessions.values():
+        if s.get("connected"):
+            promote_session_admin(s)
 
     game["range"] = num(body.get("range")) if num(body.get("range")) > 0 else 0.0
     calls = []
@@ -386,12 +429,14 @@ async def join_post(request):
         "in_game": in_game,
     }
     by_key[requested] = token
+    promote_session_admin(sessions[token])
     return JSONResponse({
         "token": token,
         "name": display_name,
         "maxDistance": current_range(),
         "in_game": in_game,
         "status": "connected" if in_game else "waiting",
+        "admin": sessions[token]["admin"],
     })
 
 
@@ -404,6 +449,7 @@ async def events_get(request):
     s["last_seen"] = time.time()
     # Refresh in_game from current world state
     s["in_game"] = s["key"] in players and not players[s["key"]].get("bot")
+    promote_session_admin(s)
     q = s["queue"]
     # Only introduce voice peers that are already confirmed in-game
     peers = [
