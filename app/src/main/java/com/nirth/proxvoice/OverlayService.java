@@ -8,12 +8,14 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.PixelFormat;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.IBinder;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
+import android.view.ViewConfiguration;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
@@ -38,23 +40,31 @@ public class OverlayService extends Service {
 
     private static final String CHANNEL_ID = "proxvoice_overlay";
     private static final int NOTIF_ID = 42;
-    private static final int TAG_MIC = 0x70F10001;
-    private static final int TAG_DEAF = 0x70F10002;
-    private static final int TAG_RANGE = 0x70F10003;
+
+    private static final int COL_BG = 0xE61A1D23;
+    private static final int COL_BTN = 0xFF2A303A;
+    private static final int COL_OFF = 0xFFFF5D6C;
+    private static final int COL_OK = 0xFF3DDC97;
+    private static final int COL_WAIT = 0xFFF0B429;
 
     private WindowManager windowManager;
     private View overlayView;
     private WindowManager.LayoutParams params;
-    private TextView nameView;
-    private TextView statusView;
+    private LinearLayout root;
+    private TextView handle;
+    private TextView micBtn;
+    private TextView deafBtn;
     private TextView rangeView;
+    private View[] extras = new View[0];
 
     private String displayName = "Proximity Voice";
     private String statusText = "Connected";
     private boolean muted = false;
     private boolean deafened = false;
-    private String rangeLabel = "–";
+    private boolean collapsed = false;
+    private String rangeLabel = "\u2013";
 
+    private boolean dragged = false;
     private int startX, startY;
     private float touchX, touchY;
 
@@ -132,48 +142,49 @@ public class OverlayService extends Service {
     }
 
     private View buildOverlayView() {
-        LinearLayout root = new LinearLayout(this);
+        root = new LinearLayout(this);
         root.setOrientation(LinearLayout.HORIZONTAL);
         root.setGravity(Gravity.CENTER_VERTICAL);
-        root.setPadding(dp(12), dp(10), dp(10), dp(10));
-        root.setBackgroundColor(0xF21E1F22);
-        root.setElevation(dp(10));
+        root.setPadding(dp(5), dp(5), dp(5), dp(5));
+        root.setBackground(round(COL_BG, 22, 0x33FFFFFF));
+        root.setElevation(dp(8));
 
-        LinearLayout meta = new LinearLayout(this);
-        meta.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout.LayoutParams metaLp = new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        meta.setLayoutParams(metaLp);
-        meta.setPadding(0, 0, dp(8), 0);
+        handle = circleBtn("\u25CF", 15);
+        handle.setOnTouchListener(this::onDrag);
 
-        nameView = new TextView(this);
-        nameView.setTextColor(0xFFFFFFFF);
-        nameView.setTextSize(13);
-        nameView.setMaxLines(1);
-        nameView.setText(displayName);
+        micBtn = circleBtn("\uD83C\uDF99", 14);
+        deafBtn = circleBtn("\uD83C\uDFA7", 14);
+        TextView down = circleBtn("\u2212", 16);
+        TextView up = circleBtn("+", 16);
+        rangeView = new TextView(this);
+        rangeView.setTextColor(0xFFFFFFFF);
+        rangeView.setTextSize(13);
+        rangeView.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        rangeView.setGravity(Gravity.CENTER);
+        rangeView.setMinWidth(dp(30));
+        rangeView.setText(rangeLabel);
 
-        statusView = new TextView(this);
-        statusView.setTextColor(0xFF8DA0B4);
-        statusView.setTextSize(11);
-        statusView.setMaxLines(1);
-        statusView.setText(statusText);
+        LinearLayout stepper = new LinearLayout(this);
+        stepper.setOrientation(LinearLayout.HORIZONTAL);
+        stepper.setGravity(Gravity.CENTER_VERTICAL);
+        stepper.setBackground(round(COL_BTN, 20, 0));
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, dp(30));
+        slp.setMargins(dp(2), 0, dp(2), 0);
+        stepper.setLayoutParams(slp);
+        down.setBackground(null);
+        up.setBackground(null);
+        stepper.addView(down);
+        stepper.addView(rangeView);
+        stepper.addView(up);
 
-        meta.addView(nameView);
-        meta.addView(statusView);
+        TextView open = circleBtn("\u2197", 14);
+        TextView close = circleBtn("\u2715", 12);
 
-        TextView mic = textBtn("🎙");
-        TextView deaf = textBtn("🎧");
-        TextView rangeDown = textBtn("−");
-        rangeView = textBtn(rangeLabel != null ? rangeLabel : "–");
-        rangeView.setTextSize(12);
-        TextView rangeUp = textBtn("+");
-        TextView open = textBtn("↗");
-        TextView close = textBtn("✕");
-
-        mic.setOnClickListener(v -> sendBroadcastAction(ACTION_TOGGLE_MIC));
-        deaf.setOnClickListener(v -> sendBroadcastAction(ACTION_TOGGLE_DEAF));
-        rangeDown.setOnClickListener(v -> sendBroadcastAction(ACTION_RANGE_DOWN));
-        rangeUp.setOnClickListener(v -> sendBroadcastAction(ACTION_RANGE_UP));
+        micBtn.setOnClickListener(v -> sendBroadcastAction(ACTION_TOGGLE_MIC));
+        deafBtn.setOnClickListener(v -> sendBroadcastAction(ACTION_TOGGLE_DEAF));
+        down.setOnClickListener(v -> sendBroadcastAction(ACTION_RANGE_DOWN));
+        up.setOnClickListener(v -> sendBroadcastAction(ACTION_RANGE_UP));
         open.setOnClickListener(v -> {
             Intent i = new Intent(this, MainActivity.class);
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
@@ -181,52 +192,73 @@ public class OverlayService extends Service {
         });
         close.setOnClickListener(v -> stopSelf());
 
-        root.setTag(TAG_MIC, mic);
-        root.setTag(TAG_DEAF, deaf);
-        root.setTag(TAG_RANGE, rangeView);
-
-        root.addView(meta);
-        root.addView(mic);
-        root.addView(deaf);
-        root.addView(rangeDown);
-        root.addView(rangeView);
-        root.addView(rangeUp);
+        root.addView(handle);
+        root.addView(micBtn);
+        root.addView(deafBtn);
+        root.addView(stepper);
         root.addView(open);
         root.addView(close);
+        extras = new View[]{micBtn, deafBtn, stepper, open, close};
 
         root.setOnTouchListener(this::onDrag);
         return root;
     }
 
-    private TextView textBtn(String emoji) {
+    private GradientDrawable round(int fill, int radiusDp, int stroke) {
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(fill);
+        g.setCornerRadius(dp(radiusDp));
+        if (stroke != 0) g.setStroke(dp(1), stroke);
+        return g;
+    }
+
+    private GradientDrawable circle(int fill) {
+        GradientDrawable g = new GradientDrawable();
+        g.setShape(GradientDrawable.OVAL);
+        g.setColor(fill);
+        return g;
+    }
+
+    private TextView circleBtn(String label, int sp) {
         TextView t = new TextView(this);
-        t.setText(emoji);
-        t.setTextSize(16);
+        t.setText(label);
+        t.setTextSize(sp);
         t.setGravity(Gravity.CENTER);
         t.setTextColor(0xFFFFFFFF);
-        t.setBackgroundColor(0xFF2B2D31);
-        t.setPadding(dp(10), dp(8), dp(10), dp(8));
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(40), dp(40));
-        lp.setMargins(dp(3), 0, dp(3), 0);
+        t.setBackground(circle(COL_BTN));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(30), dp(30));
+        lp.setMargins(dp(2), 0, dp(2), 0);
         t.setLayoutParams(lp);
         t.setClickable(true);
         t.setFocusable(true);
         return t;
     }
 
+    /** Drag anywhere on the pill; a plain tap on the dot folds / unfolds it. */
     private boolean onDrag(View v, MotionEvent event) {
+        int slop = ViewConfiguration.get(this).getScaledTouchSlop();
         switch (event.getAction()) {
             case MotionEvent.ACTION_DOWN:
                 startX = params.x;
                 startY = params.y;
                 touchX = event.getRawX();
                 touchY = event.getRawY();
+                dragged = false;
                 return true;
             case MotionEvent.ACTION_MOVE:
-                params.x = startX + (int) (event.getRawX() - touchX);
-                params.y = startY + (int) (event.getRawY() - touchY);
-                if (overlayView != null) {
-                    windowManager.updateViewLayout(overlayView, params);
+                float dx = event.getRawX() - touchX;
+                float dy = event.getRawY() - touchY;
+                if (Math.abs(dx) > slop || Math.abs(dy) > slop) dragged = true;
+                if (dragged) {
+                    params.x = startX + (int) dx;
+                    params.y = startY + (int) dy;
+                    if (overlayView != null) windowManager.updateViewLayout(overlayView, params);
+                }
+                return true;
+            case MotionEvent.ACTION_UP:
+                if (!dragged && v == handle) {
+                    collapsed = !collapsed;
+                    applyUi();
                 }
                 return true;
             default:
@@ -235,35 +267,27 @@ public class OverlayService extends Service {
     }
 
     private void applyUi() {
-        if (nameView != null) {
-            nameView.setText(displayName != null ? displayName : "Proximity Voice");
+        if (overlayView == null) return;
+        boolean waiting = statusText != null && statusText.toLowerCase().contains("wait");
+        boolean off = muted || deafened;
+        if (handle != null) {
+            handle.setTextColor(off ? COL_OFF : (waiting ? COL_WAIT : COL_OK));
         }
-        if (statusView != null) {
-            statusView.setText(statusText != null ? statusText : "");
-            boolean waiting = statusText != null && statusText.toLowerCase().contains("wait");
-            statusView.setTextColor(waiting ? 0xFFF0B429 : 0xFF3DDC97);
+        if (micBtn != null) {
+            micBtn.setText(off ? "\uD83D\uDD07" : "\uD83C\uDF99");
+            micBtn.setBackground(circle(off ? COL_OFF : COL_BTN));
         }
-        if (overlayView != null) {
-            Object micObj = overlayView.getTag(TAG_MIC);
-            Object deafObj = overlayView.getTag(TAG_DEAF);
-            if (micObj instanceof TextView) {
-                TextView mic = (TextView) micObj;
-                mic.setText(muted || deafened ? "🔇" : "🎙");
-                mic.setBackgroundColor(muted || deafened ? 0xFFFF5D6C : 0xFF2B2D31);
-            }
-            if (deafObj instanceof TextView) {
-                TextView deaf = (TextView) deafObj;
-                deaf.setText(deafened ? "🙉" : "🎧");
-                deaf.setBackgroundColor(deafened ? 0xFFFF5D6C : 0xFF2B2D31);
-            }
-            Object rangeObj = overlayView.getTag(TAG_RANGE);
-            if (rangeObj instanceof TextView) {
-                TextView rv = (TextView) rangeObj;
-                rv.setText(rangeLabel != null && !rangeLabel.isEmpty() ? rangeLabel : "–");
-            }
+        if (deafBtn != null) {
+            deafBtn.setText(deafened ? "\uD83D\uDE49" : "\uD83C\uDFA7");
+            deafBtn.setBackground(circle(deafened ? COL_OFF : COL_BTN));
         }
         if (rangeView != null) {
-            rangeView.setText(rangeLabel != null && !rangeLabel.isEmpty() ? rangeLabel : "–");
+            rangeView.setText(rangeLabel != null && !rangeLabel.isEmpty() ? rangeLabel : "\u2013");
+        }
+        for (View x : extras) x.setVisibility(collapsed ? View.GONE : View.VISIBLE);
+        if (root != null) {
+            root.setAlpha(collapsed ? 0.8f : 0.96f);
+            root.setPadding(dp(5), dp(5), dp(5), dp(5));
         }
     }
 
