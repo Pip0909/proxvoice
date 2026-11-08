@@ -528,8 +528,21 @@ def clamp_range(v):
     return min(max(num(v, RANGE_MIN), RANGE_MIN), RANGE_MAX)
 
 
+def snap_range_step(v):
+    """Snap a finite range to the nearest power-of-two step (1…512)."""
+    steps = (1, 2, 4, 8, 16, 32, 64, 128, 256, 512)
+    r = clamp_range(v)
+    best = steps[0]
+    best_d = abs(r - best)
+    for s in steps:
+        d = abs(r - s)
+        if d < best_d:
+            best, best_d = s, d
+    return float(best)
+
+
 async def range_post(request):
-    """A player changes their own mic range. null = back to the default."""
+    """A player changes their own mic range. null = back to the default (game base via Render)."""
     body = await read_json(request)
     s = session_from(body)
     if s is None:
@@ -543,10 +556,17 @@ async def range_post(request):
             return JSONResponse({"error": "admin_only", "message": "ทั้งโลกใช้ได้เฉพาะแอดมิน"}, status_code=403)
         prefs[s["key"]] = GLOBAL
     else:
-        r = clamp_range(val)
+        r = snap_range_step(val)
+        # Admins are not capped by player_cap; still snapped into 1…512 for finite values.
+        # Whole-world remains GLOBAL (-1) only.
         prefs[s["key"]] = r if s["admin"] else min(r, player_cap())
     broadcast_positions()
-    return JSONResponse({"ok": True, "range": chosen_range(s["key"])})
+    payload = positions_payload_for(s["key"]).get("self") or {}
+    return JSONResponse({
+        "ok": True,
+        "range": chosen_range(s["key"]),
+        "self": payload,
+    })
 
 
 async def admin_login_post(request):
