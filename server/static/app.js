@@ -80,6 +80,10 @@ function showError(msg) { $('#loginError').textContent = msg || ''; }
 function show(which) {
   $('#login').hidden = which !== 'login';
   $('#room').hidden = which !== 'room';
+  const fp = $('#floatPanel');
+  if (fp) fp.hidden = which !== 'room';
+  document.body.classList.toggle('in-room', which === 'room');
+  if (which === 'room') syncFloatPanel();
 }
 
 /** Update the status line under the player's name. */
@@ -87,16 +91,22 @@ function updateStatusUI(status, name) {
   const el = $('#status');
   const dot = $('#meDot');
   if (!el) return;
-  if (name) $('#meName').textContent = name;
+  if (name) {
+    $('#meName').textContent = name;
+    const fn = $('#floatName');
+    if (fn) fn.textContent = name;
+  }
   if (status === 'connected') {
     const me = session && positions.get(session.name.toLowerCase());
-    el.textContent = me ? ('Connected · ' + prettyDim(me.dim)) : 'Connected';
+    const text = me ? ('Connected · ' + prettyDim(me.dim)) : 'Connected';
+    el.textContent = text;
     el.classList.remove('waiting');
     el.classList.add('connected');
     if (dot) {
       dot.classList.remove('waiting');
       dot.classList.add('online');
     }
+    setFloatStatus(text, 'connected');
   } else if (status === 'waiting') {
     el.textContent = 'Waiting for Minecraft…';
     el.classList.remove('connected');
@@ -105,13 +115,66 @@ function updateStatusUI(status, name) {
       dot.classList.remove('online', 'speaking');
       dot.classList.add('waiting');
     }
+    setFloatStatus('Waiting for Minecraft…', 'waiting');
   } else if (status === 'reconnecting') {
     el.textContent = 'กำลังเชื่อมต่อใหม่…';
     el.classList.remove('connected');
     el.classList.add('waiting');
+    setFloatStatus('กำลังเชื่อมต่อใหม่…', 'waiting');
   } else {
     el.textContent = status || '';
+    setFloatStatus(status || '', '');
   }
+}
+
+function setFloatStatus(text, cls) {
+  const fs = $('#floatStatus');
+  const fd = $('#floatDot');
+  if (fs) {
+    fs.textContent = text;
+    fs.classList.remove('waiting', 'connected');
+    if (cls) fs.classList.add(cls);
+  }
+  if (fd) {
+    fd.classList.remove('waiting', 'online', 'speaking');
+    if (cls === 'connected') fd.classList.add('online');
+    if (cls === 'waiting') fd.classList.add('waiting');
+  }
+}
+
+function syncFloatPanel() {
+  if (!$('#floatPanel') || $('#floatPanel').hidden) return;
+  if (session) {
+    const fn = $('#floatName');
+    if (fn) fn.textContent = session.name;
+  }
+  const off = micOff();
+  const fMic = $('#floatMic');
+  if (fMic) {
+    fMic.classList.toggle('is-off', off);
+    fMic.setAttribute('aria-pressed', String(off));
+    fMic.disabled = gameMuted;
+    const ico = $('#floatMicIcon');
+    if (ico) ico.textContent = off ? '🔇' : '🎙️';
+  }
+  const fDeaf = $('#floatDeaf');
+  if (fDeaf) {
+    fDeaf.classList.toggle('is-off', deafened);
+    fDeaf.setAttribute('aria-pressed', String(deafened));
+    const ico = $('#floatDeafIcon');
+    if (ico) ico.textContent = deafened ? '🔇' : '🎧';
+  }
+  const meDot = $('#meDot');
+  const fDot = $('#floatDot');
+  if (meDot && fDot) {
+    fDot.classList.toggle('speaking', meDot.classList.contains('speaking'));
+  }
+  const rn = $('#rangeNum');
+  const frn = $('#floatRangeNum');
+  if (rn && frn) frn.textContent = rn.textContent;
+  const mv = $('#masterVol');
+  const fv = $('#floatVol');
+  if (mv && fv && document.activeElement !== fv) fv.value = mv.value;
 }
 
 // ---------- start / leave ----------
@@ -559,6 +622,7 @@ function renderControls() {
   const n = $('#notice');
   n.hidden = notes.length === 0;
   n.textContent = notes.join(' · ');
+  syncFloatPanel();
 }
 
 async function sendRange(value) {
@@ -786,3 +850,93 @@ if (/iphone|ipad|ipod/i.test(navigator.userAgent) && !window.matchMedia('(displa
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
 }
+
+// ---------- Discord-style floating panel ----------
+(function initFloatPanel() {
+  const panel = $('#floatPanel');
+  if (!panel) return;
+
+  $('#floatMic')?.addEventListener('click', () => {
+    if (gameMuted) return;
+    if (deafened) setDeafened(false);
+    else setMuted(!muted);
+  });
+  $('#floatDeaf')?.addEventListener('click', () => setDeafened(!deafened));
+  $('#floatLeave')?.addEventListener('click', leave);
+
+  let expanded = false;
+  $('#floatExpand')?.addEventListener('click', () => {
+    expanded = !expanded;
+    const extra = $('#floatExtra');
+    if (extra) extra.hidden = !expanded;
+    const btn = $('#floatExpand');
+    if (btn) btn.setAttribute('aria-pressed', String(expanded));
+    const ico = $('#floatExpandIcon');
+    if (ico) ico.textContent = expanded ? '▾' : '▴';
+  });
+
+  $('#floatVol')?.addEventListener('input', (e) => {
+    masterVol = Number(e.target.value) / 100;
+    if (masterGain) masterGain.gain.value = masterVol;
+    const mv = $('#masterVol');
+    if (mv) mv.value = e.target.value;
+  });
+  $('#floatRangeDown')?.addEventListener('click', () => stepRange(-1));
+  $('#floatRangeUp')?.addEventListener('click', () => stepRange(1));
+
+  // Drag to reposition (touch + mouse)
+  const handle = $('#floatDrag') || panel;
+  let dragging = false;
+  let startX = 0, startY = 0, origLeft = 0, origTop = 0;
+
+  function pointerDown(clientX, clientY) {
+    dragging = true;
+    panel.classList.add('dragging');
+    const rect = panel.getBoundingClientRect();
+    startX = clientX;
+    startY = clientY;
+    origLeft = rect.left;
+    origTop = rect.top;
+    panel.style.left = rect.left + 'px';
+    panel.style.top = rect.top + 'px';
+    panel.style.right = 'auto';
+    panel.style.bottom = 'auto';
+    panel.style.margin = '0';
+    panel.style.width = rect.width + 'px';
+  }
+  function pointerMove(clientX, clientY) {
+    if (!dragging) return;
+    const dx = clientX - startX;
+    const dy = clientY - startY;
+    let nx = origLeft + dx;
+    let ny = origTop + dy;
+    const maxX = window.innerWidth - panel.offsetWidth - 4;
+    const maxY = window.innerHeight - panel.offsetHeight - 4;
+    nx = Math.max(4, Math.min(maxX, nx));
+    ny = Math.max(4, Math.min(maxY, ny));
+    panel.style.left = nx + 'px';
+    panel.style.top = ny + 'px';
+  }
+  function pointerUp() {
+    if (!dragging) return;
+    dragging = false;
+    panel.classList.remove('dragging');
+  }
+
+  handle.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    pointerDown(e.clientX, e.clientY);
+  });
+  window.addEventListener('mousemove', (e) => pointerMove(e.clientX, e.clientY));
+  window.addEventListener('mouseup', pointerUp);
+
+  handle.addEventListener('touchstart', (e) => {
+    if (!e.touches[0]) return;
+    pointerDown(e.touches[0].clientX, e.touches[0].clientY);
+  }, { passive: true });
+  window.addEventListener('touchmove', (e) => {
+    if (!dragging || !e.touches[0]) return;
+    pointerMove(e.touches[0].clientX, e.touches[0].clientY);
+  }, { passive: true });
+  window.addEventListener('touchend', pointerUp);
+})();
