@@ -80,6 +80,27 @@ def ice_servers():
 # lowercase name -> {name, x, y, z, ry, dim, mic, hear, bot, range, ts, op}
 players = {}
 game = {"range": 0.0, "override": 0.0, "calls": []}  # calls: list of (key1, key2)
+ring_queue = {}  # key -> (range, ts): mic-range rings the addon should draw in-game on its next post
+RING_TTL = 60.0
+
+
+def queue_ring(key):
+    """Remember that this player's mic range changed so the addon can show the ring in the game."""
+    ring_queue[key] = time.time()
+
+
+def take_rings():
+    now = time.time()
+    out = []
+    for k, ts in list(ring_queue.items()):
+        if now - ts > RING_TTL:
+            del ring_queue[k]
+        elif k in players:
+            r = chosen_range(k)
+            if r > 0:
+                out.append({"name": players[k]["name"], "range": r})
+            del ring_queue[k]
+    return out
 prefs = {}      # key -> range the player chose for themselves (blocks, or GLOBAL for admins)
 forced = {}     # key -> range an admin set for that player (blocks, or GLOBAL)
 smuted = set()  # keys an admin muted for everyone
@@ -327,7 +348,7 @@ async def update_coords_post(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     body = await read_json(request)
     ingest(body, body.get("users"))
-    return JSONResponse({"ok": True, "ic_map": {}})
+    return JSONResponse({"ok": True, "ic_map": {}, "rings": take_rings()})
 
 
 async def config_get(request):
@@ -551,6 +572,7 @@ async def range_post(request):
     val = body.get("range")
     if val is None:
         prefs.pop(s["key"], None)
+        queue_ring(s["key"])
     elif num(val) == GLOBAL:
         if not s["admin"]:
             return JSONResponse({"error": "admin_only", "message": "ทั้งโลกใช้ได้เฉพาะแอดมิน"}, status_code=403)
@@ -560,6 +582,7 @@ async def range_post(request):
         # Admins are not capped by player_cap; still snapped into 1…512 for finite values.
         # Whole-world remains GLOBAL (-1) only.
         prefs[s["key"]] = r if s["admin"] else min(r, player_cap())
+    queue_ring(s["key"])
     broadcast_positions()
     payload = positions_payload_for(s["key"]).get("self") or {}
     return JSONResponse({
@@ -614,6 +637,8 @@ async def admin_action_post(request):
 
     if action == "base_range":
         game["override"] = 0.0 if value in (None, 0) else clamp_range(value)
+        for k in players:
+            queue_ring(k)
     elif action in ("mute", "player_range", "reset_player"):
         if target not in players:
             return JSONResponse({"error": "no_such_player", "message": "ไม่พบผู้เล่นคนนี้"}, status_code=404)
@@ -633,6 +658,8 @@ async def admin_action_post(request):
             forced.pop(target, None)
             smuted.discard(target)
             prefs.pop(target, None)
+        if action in ("player_range", "reset_player"):
+            queue_ring(target)
     else:
         return JSONResponse({"error": "bad_action"}, status_code=400)
     broadcast_positions()
