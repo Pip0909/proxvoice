@@ -11,8 +11,8 @@ android {
         minSdk 24
         targetSdk 34
         // Semver-style tags: v0.x.y — versionCode must only go up for installs
-        versionCode 5
-        versionName '0.3.2'
+        versionCode 6
+        versionName '0.3.3'
     }
 
     // Fixed keystore so CI builds can update over previous installs
@@ -39,4 +39,8 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+}
+
+dependencies {
+    implementation 'androidx.core:core:1.13.1'
 }
