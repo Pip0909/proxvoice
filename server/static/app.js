@@ -608,7 +608,12 @@ function setDeafened(d) {
 // ---------- control bar ----------
 
 function fmtRange(r) { return r < 0 ? '🌍' : String(Math.round(r)); }
-function stepFor(v) { return v < 20 ? 2 : v < 100 ? 5 : 25; }
+function stepFor(v) {
+  const steps = rangeSteps();
+  const cur = nearestRangeStep(v);
+  const idx = Math.max(0, steps.indexOf(cur));
+  return idx < steps.length - 1 ? steps[idx + 1] - cur : 0;
+}
 
 function renderControls() {
   if (!session) return;
@@ -634,7 +639,7 @@ function renderControls() {
   const box = $('#rangeBox');
   if (si) {
     const r = si.range;
-    const max = si.admin ? 1000 : si.cap;
+    const max = Math.min(512, si.admin ? 512 : (si.cap || 512));
     $('#rangeNum').textContent = fmtRange(r);
     $('#rangeLbl').textContent = si.locked ? '🔒 ล็อก' : (r < 0 ? 'ทั้งโลก' : 'วงไมค์');
     box.classList.toggle('locked', !!si.locked);
@@ -696,13 +701,35 @@ function nextPow2Range(r, dir, max) {
   return Math.max(1, n);
 }
 
+function rangeSteps() {
+  return [1, 2, 4, 8, 16, 32, 64, 128, 256, 512];
+}
+function nearestRangeStep(v) {
+  const steps = rangeSteps();
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0) return steps[0];
+  let best = steps[0], bestD = Math.abs(n - best);
+  for (const s of steps) {
+    const d = Math.abs(n - s);
+    if (d < bestD) { best = s; bestD = d; }
+  }
+  return best;
+}
 function stepRange(dir) {
   const si = selfInfo;
   if (!si || si.locked) return;
   const r = si.range;
   if (r < 0) { if (dir < 0) sendRange(null); return; } // leave "whole world"
-  const max = si.admin ? 1000 : si.cap;
-  sendRange(nextPow2Range(r, dir, max));
+  const steps = rangeSteps();
+  const max = si.admin ? 512 : Math.min(512, si.cap || 512);
+  const cur = nearestRangeStep(r);
+  let idx = steps.indexOf(cur);
+  if (idx < 0) idx = 0;
+  idx = dir > 0 ? Math.min(steps.length - 1, idx + 1) : Math.max(0, idx - 1);
+  let next = steps[idx];
+  if (next > max) next = max;
+  if (next < 1) next = 1;
+  sendRange(next);
 }
 
 async function adminLogin() {
@@ -868,10 +895,10 @@ $('#adminLogout').addEventListener('click', async () => {
 });
 $('#globalBtn').addEventListener('click', () => { if (selfInfo) sendRange(selfInfo.range < 0 ? null : -1); });
 $('#baseDown').addEventListener('click', () => {
-  if (selfInfo) adminAction('base_range', '', Math.max(2, Math.round(selfInfo.base) - stepFor(selfInfo.base - 1)));
+  if (selfInfo) { const steps = rangeSteps(); const cur = nearestRangeStep(selfInfo.base); const i = Math.max(0, steps.indexOf(cur)); adminAction('base_range', '', steps[Math.max(0, i - 1)]); }
 });
 $('#baseUp').addEventListener('click', () => {
-  if (selfInfo) adminAction('base_range', '', Math.min(1000, Math.round(selfInfo.base) + stepFor(selfInfo.base)));
+  if (selfInfo) { const steps = rangeSteps(); const cur = nearestRangeStep(selfInfo.base); const i = Math.max(0, steps.indexOf(cur)); adminAction('base_range', '', steps[Math.min(steps.length - 1, i + 1)]); }
 });
 $('#baseAuto').addEventListener('click', () => adminAction('base_range', '', null));
 $('#masterVol').addEventListener('input', (e) => {
