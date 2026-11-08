@@ -96,6 +96,7 @@ function nativeOverlayAvailable() {
   return !!(window.ProxVoiceNative || (window.ProxVoiceOverlay && window.ProxVoiceOverlay.available && window.ProxVoiceOverlay.available()));
 }
 function nativeRangeLabel() {
+  if (selfInfo && Number(selfInfo.range) < 0) return '🌍';
   const el = $('#rangeNum') || $('#floatRangeNum');
   return (el && el.textContent) ? el.textContent : '–';
 }
@@ -353,6 +354,7 @@ function openEvents() {
     // Keep UI status in sync with presence
     updateStatusUI(me ? 'connected' : 'waiting', session && session.name);
     renderControls();
+    try { nativeOverlayUpdate(); } catch (e) {}
     updateAudio();
   });
   mine.addEventListener('status', (e) => {
@@ -681,9 +683,21 @@ function renderControls() {
 
 async function sendRange(value) {
   if (!session) return;
-  if (selfInfo) selfInfo.range = value === null ? selfInfo.base : value; // optimistic; the server confirms
+  // Optimistic UI — Render (/api/range) is the source of truth and will confirm via SSE positions
+  if (selfInfo) {
+    if (value === null) selfInfo.range = selfInfo.base;
+    else selfInfo.range = value;
+  }
   renderControls();
-  try { await api('/api/range', { token: session.token, range: value }); } catch (e) { /* resynced by the next positions event */ }
+  try {
+    const res = await api('/api/range', { token: session.token, range: value });
+    if (res && res.ok && res.data) {
+      if (res.data.self) selfInfo = { ...(selfInfo || {}), ...res.data.self };
+      else if (res.data.range !== undefined && selfInfo) selfInfo.range = res.data.range;
+      renderControls();
+    }
+  } catch (e) { /* next positions event from Render will resync */ }
+  try { nativeOverlayUpdate(); } catch (e) {}
 }
 
 /** Mic range steps: … 1 → 2 → 4 → 8 → 16 → 32 → … (×2 / ÷2), min 1 */
