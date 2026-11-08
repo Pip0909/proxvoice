@@ -14,8 +14,6 @@ import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.text.InputType;
-import android.graphics.Color;
-import android.graphics.drawable.GradientDrawable;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
@@ -35,6 +33,14 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import org.json.JSONObject;
+
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Thin shell around the Proximity Voice web app, with optional
@@ -199,6 +205,77 @@ public class MainActivity extends Activity {
     private void openServer(String url) {
         showLoading("กำลังเชื่อมต่อเซิร์ฟเวอร์…\n(ครั้งแรกอาจช้า ถ้า Render เพิ่งตื่น)");
         web.loadUrl(url);
+        checkForUpdate(url);
+    }
+
+    /** Ask Render (/api/app-version) whether a newer APK is available. */
+    private void checkForUpdate(String serverUrl) {
+        if (serverUrl == null || serverUrl.isEmpty()) return;
+        final String base = serverUrl.endsWith("/") ? serverUrl.substring(0, serverUrl.length() - 1) : serverUrl;
+        new Thread(() -> {
+            try {
+                URL u = new URL(base + "/api/app-version");
+                HttpURLConnection conn = (HttpURLConnection) u.openConnection();
+                conn.setConnectTimeout(8000);
+                conn.setReadTimeout(8000);
+                conn.setRequestProperty("Accept", "application/json");
+                conn.setRequestProperty("User-Agent", "ProximityVoice-Android");
+                int code = conn.getResponseCode();
+                if (code != 200) return;
+                StringBuilder sb = new StringBuilder();
+                try (BufferedReader br = new BufferedReader(
+                        new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = br.readLine()) != null) sb.append(line);
+                }
+                JSONObject json = new JSONObject(sb.toString());
+                int remoteCode = json.optInt("versionCode", 0);
+                String remoteName = json.optString("versionName", "");
+                String apkUrl = json.optString("apkUrl", "");
+                String notes = json.optString("notes", "");
+                boolean force = json.optBoolean("force", false);
+                int localCode = currentVersionCode();
+                if (remoteCode <= localCode || apkUrl.isEmpty()) return;
+                runOnUiThread(() -> promptUpdate(remoteName, notes, apkUrl, force));
+            } catch (Exception ignored) {
+                // offline / cold start — skip quietly
+            }
+        }).start();
+    }
+
+    private int currentVersionCode() {
+        try {
+            if (Build.VERSION.SDK_INT >= 28) {
+                return (int) getPackageManager()
+                        .getPackageInfo(getPackageName(), 0).getLongVersionCode();
+            }
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionCode;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private void promptUpdate(String versionName, String notes, String apkUrl, boolean force) {
+        if (isFinishing()) return;
+        String msg = "มีเวอร์ชันใหม่" + (versionName.isEmpty() ? "" : " v" + versionName);
+        if (notes != null && !notes.isEmpty()) msg += "\n\n" + notes;
+        msg += "\n\nต้องการอัปเดตตอนนี้ไหม?";
+
+        AlertDialog.Builder b = new AlertDialog.Builder(this)
+                .setTitle("อัปเดตแอป")
+                .setMessage(msg)
+                .setCancelable(!force)
+                .setPositiveButton("อัปเดต", (d, w) -> {
+                    try {
+                        startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(apkUrl)));
+                    } catch (Exception e) {
+                        Toast.makeText(this, "เปิดลิงก์อัปเดตไม่ได้", Toast.LENGTH_LONG).show();
+                    }
+                });
+        if (!force) {
+            b.setNegativeButton("ภายหลัง", null);
+        }
+        b.show();
     }
 
     private int dp(int v) {
