@@ -80,6 +80,7 @@ def ice_servers():
 # lowercase name -> {name, x, y, z, ry, dim, mic, hear, bot, range, ts, op}
 players = {}
 game = {"range": 0.0, "override": 0.0, "calls": []}  # calls: list of (key1, key2)
+ring_event = asyncio.Event()
 ring_queue = {}  # key -> (range, ts): mic-range rings the addon should draw in-game on its next post
 RING_TTL = 60.0
 
@@ -87,6 +88,7 @@ RING_TTL = 60.0
 def queue_ring(key):
     """Remember that this player's mic range changed so the addon can show the ring in the game."""
     ring_queue[key] = time.time()
+    ring_event.set()  # wake the addon's long-poll so the ring shows up at once
 
 
 def take_rings():
@@ -335,6 +337,29 @@ async def positions_post(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     ingest(body, body.get("players"))
     return JSONResponse({"ok": True, "count": len(players)})
+
+
+async def rings_get(request):
+    """Long-poll for the addon: returns as soon as a mic-range ring has to be shown (or after ?wait= seconds)."""
+    if not secret_ok(request.path_params.get("secret", "")):
+        return JSONResponse({"error": "bad_secret"}, status_code=401)
+    try:
+        wait = max(0.0, min(25.0, float(request.query_params.get("wait", "0"))))
+    except ValueError:
+        wait = 0.0
+    deadline = time.time() + wait
+    while True:
+        rings = take_rings()
+        if rings:
+            return JSONResponse({"rings": rings})
+        left = deadline - time.time()
+        if left <= 0:
+            return JSONResponse({"rings": []})
+        ring_event.clear()
+        try:
+            await asyncio.wait_for(ring_event.wait(), timeout=left)
+        except asyncio.TimeoutError:
+            pass
 
 
 async def update_coords_post(request):
@@ -706,6 +731,7 @@ routes = [
     Route("/api/positions", positions_post, methods=["POST"]),
     Route("/update_coords", update_coords_post, methods=["POST"]),
     Route("/s/{secret}/update_coords", update_coords_post, methods=["POST"]),
+    Route("/s/{secret}/rings", rings_get),
     Route("/api/join", join_post, methods=["POST"]),
     Route("/api/signal", signal_post, methods=["POST"]),
     Route("/api/ping", ping_post, methods=["POST"]),
