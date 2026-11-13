@@ -1,0 +1,56 @@
+name: Build iOS (unsigned IPA)
+
+on:
+  push:
+    paths:
+      - 'ios/**'
+      - '.github/workflows/ios.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Build (no code signing)
+        working-directory: ios
+        run: |
+          xcodebuild -project ProxVoice.xcodeproj -scheme ProxVoice \
+            -configuration Release -sdk iphoneos -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package IPA
+        working-directory: ios
+        run: |
+          rm -rf Payload ProximityVoice-unsigned.ipa
+          mkdir Payload
+          cp -R build/Build/Products/Release-iphoneos/ProxVoice.app Payload/
+          zip -qr ProximityVoice-unsigned.ipa Payload
+          ls -la ProximityVoice-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ProximityVoice-unsigned-ipa
+          path: ios/ProximityVoice-unsigned.ipa
+
+      - name: Publish release (ios-latest)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete ios-latest --yes --cleanup-tag || true
+          gh release create ios-latest ios/ProximityVoice-unsigned.ipa \
+            --title "Proximity Voice iOS (unsigned, latest)" \
+            --notes "Unsigned IPA. Install with AltStore / Sideloadly (free Apple ID, re-sign every 7 days) or TrollStore. No floating overlay on iOS; background audio is kept while you play." \
+            --target "${{ github.sha }}"

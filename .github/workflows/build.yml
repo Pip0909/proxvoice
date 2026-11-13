@@ -6,6 +6,8 @@ on:
       - 'server/**'
       - 'render.yaml'
       - 'README.md'
+      - 'ios/**'
+      - '.github/workflows/ios.yml'
   workflow_dispatch:
 
 permissions:

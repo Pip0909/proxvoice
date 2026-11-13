@@ -1,0 +1,38 @@
+name: ProxVoice
+options:
+  bundleIdPrefix: com.nirth
+  deploymentTarget:
+    iOS: "15.0"
+targets:
+  ProxVoice:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+      - Assets.xcassets
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nirth.proxvoice
+        PRODUCT_NAME: ProxVoice
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: Proximity Voice
+        UILaunchScreen: {}
+        NSMicrophoneUsageDescription: ใช้ไมโครโฟนเพื่อคุยกับเพื่อนในเกม
+        UIBackgroundModes:
+          - audio
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
