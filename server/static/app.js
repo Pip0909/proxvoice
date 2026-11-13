@@ -245,8 +245,28 @@ async function start() {
       throw Object.assign(new Error('insecure'), { name: 'InsecureContext' });
     }
     localStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: 1,
+        sampleRate: 48000,
+        // Chrome / Android extras that improve clarity in game noise
+        googEchoCancellation: true,
+        googNoiseSuppression: true,
+        googAutoGainControl: true,
+        googHighpassFilter: true,
+        googTypingNoiseDetection: true,
+        googNoiseSuppression2: true,
+        googAutoGainControl2: true,
+      },
     });
+    // Hint the encoder this is voice (helps some browsers pick better bitrate/packetization)
+    try {
+      localStream.getAudioTracks().forEach((t) => {
+        if ('contentHint' in t) t.contentHint = 'speech';
+      });
+    } catch (e) { /* ignore */ }
   } catch (e) {
     cleanupAudio();
     $('#joinBtn').disabled = false;
@@ -495,12 +515,26 @@ function attachRemote(peer, stream) {
   peer.el.play().catch(() => {});
 
   const src = audioCtx.createMediaStreamSource(stream);
+
+  // Soft compressor: reduces harsh peaks / clipping when someone shouts or has high mic gain
+  const compressor = audioCtx.createDynamicsCompressor();
+  compressor.threshold.value = -24;
+  compressor.knee.value = 12;
+  compressor.ratio.value = 3;
+  compressor.attack.value = 0.003;
+  compressor.release.value = 0.25;
+
   const panner = audioCtx.createPanner();
   panner.panningModel = 'HRTF';
-  panner.distanceModel = 'linear';
-  panner.refDistance = 1.5;
-  panner.maxDistance = cfg.maxDistance;
-  panner.rolloffFactor = 1;
+  // inverse falls off more naturally for voice than linear
+  panner.distanceModel = 'inverse';
+  panner.refDistance = 2;
+  panner.maxDistance = Math.max(cfg.maxDistance || 32, 8);
+  panner.rolloffFactor = 1.2;
+  panner.coneInnerAngle = 360;
+  panner.coneOuterAngle = 360;
+  panner.coneOuterGain = 1;
+
   const gain = audioCtx.createGain();
   gain.gain.value = 0;
   const callGain = audioCtx.createGain(); // phone call: full volume, no distance
@@ -508,14 +542,17 @@ function attachRemote(peer, stream) {
   const analyser = audioCtx.createAnalyser();
   analyser.fftSize = 512;
 
-  src.connect(panner);
+  // spatial path: src → compressor → panner → gain → master
+  src.connect(compressor);
+  compressor.connect(panner);
   panner.connect(gain);
   gain.connect(masterGain);
-  src.connect(callGain);
+  // call path (full volume): src → compressor → callGain → master
+  compressor.connect(callGain);
   callGain.connect(masterGain);
   src.connect(analyser);
 
-  Object.assign(peer, { src, panner, gain, callGain, analyser });
+  Object.assign(peer, { src, compressor, panner, gain, callGain, analyser });
   updateAudio();
 }
 
@@ -526,6 +563,7 @@ function closePeer(name) {
   try { p.pc.close(); } catch (e) { /* ignore */ }
   try { if (p.el) { p.el.srcObject = null; } } catch (e) { /* ignore */ }
   try { if (p.src) p.src.disconnect(); } catch (e) { /* ignore */ }
+  try { if (p.compressor) p.compressor.disconnect(); } catch (e) { /* ignore */ }
   try { if (p.panner) p.panner.disconnect(); } catch (e) { /* ignore */ }
   try { if (p.gain) p.gain.disconnect(); } catch (e) { /* ignore */ }
   try { if (p.callGain) p.callGain.disconnect(); } catch (e) { /* ignore */ }
@@ -548,33 +586,32 @@ function updateAudio() {
 
   if (me) {
     const L = audioCtx.listener;
-    const yaw = (me.ry * Math.PI) / 180;
-    const fx = -Math.sin(yaw);
-    const fz = Math.cos(yaw);
     if (L.positionX) {
       setParam(L.positionX, me.x, t);
       setParam(L.positionY, me.y, t);
       setParam(L.positionZ, me.z, t);
-      setParam(L.forwardX, fx, t);
+      const ry = (me.ry || 0) * Math.PI / 180;
+      setParam(L.forwardX, -Math.sin(ry), t);
       setParam(L.forwardY, 0, t);
-      setParam(L.forwardZ, fz, t);
+      setParam(L.forwardZ, -Math.cos(ry), t);
       setParam(L.upX, 0, t);
       setParam(L.upY, 1, t);
       setParam(L.upZ, 0, t);
-    } else {
+    } else if (L.setPosition) {
       L.setPosition(me.x, me.y, me.z);
-      L.setOrientation(fx, 0, fz, 0, 1, 0);
+      const ry = (me.ry || 0) * Math.PI / 180;
+      L.setOrientation(-Math.sin(ry), 0, -Math.cos(ry), 0, 1, 0);
     }
   }
 
-  peers.forEach((peer, name) => {
-    if (!peer.panner) return;
-    const key = name.toLowerCase();
-    const pos = positions.get(key);
+  peers.forEach((peer) => {
+    if (!peer.hasAudio || !peer.gain) return;
+    const pos = positions.get(peer.name.toLowerCase());
     const a = audibility(me, pos);
-    const vol = userVolume.has(key) ? userVolume.get(key) : 1;
-    if (a.mode === 'spatial') {
-      peer.panner.maxDistance = Math.max(a.range, 2);
+    const uv = userVolume.get(peer.name.toLowerCase());
+    const vol = (uv !== undefined ? uv : 1) * (deafened ? 0 : 1);
+
+    if (a.mode === 'spatial' && pos) {
       if (peer.panner.positionX) {
         setParam(peer.panner.positionX, pos.x, t);
         setParam(peer.panner.positionY, pos.y, t);
@@ -593,553 +630,3 @@ function updateAudio() {
     }
   });
 }
-
-// ---------- UI ----------
-
-function micOff() { return muted || gameMuted || deafened; }
-
-function setMuted(m) {
-  muted = m;
-  if (localStream) localStream.getAudioTracks().forEach((t) => { t.enabled = !micOff(); });
-  renderControls();
-  nativeOverlayUpdate();
-}
-
-function setDeafened(d) {
-  deafened = d;
-  setMuted(muted); // deafening silences the mic as well, like Discord
-  updateAudio();
-}
-
-// ---------- control bar ----------
-
-function fmtRange(r) { return r < 0 ? '🌍' : String(Math.round(r)); }
-function stepFor(v) {
-  const steps = rangeSteps();
-  const cur = nearestRangeStep(v);
-  const idx = Math.max(0, steps.indexOf(cur));
-  return idx < steps.length - 1 ? steps[idx + 1] - cur : 0;
-}
-
-function renderControls() {
-  if (!session) return;
-  const me = positions.get(session.name.toLowerCase());
-  const si = selfInfo;
-  const hearOffInGame = !!(me && me.hear === false);
-  const smutedMe = !!(me && me.smuted);
-
-  const off = micOff();
-  const mic = $('#micBtn');
-  mic.classList.toggle('is-off', off);
-  mic.setAttribute('aria-pressed', String(off));
-  mic.disabled = gameMuted; // the game (or an admin) decides; the button cannot override it
-  $('#micIcon').textContent = off ? '🔇' : '🎙️';
-  $('#micLabel').textContent = off ? 'ปิดไมค์' : 'ไมค์';
-
-  const deaf = $('#deafBtn');
-  deaf.classList.toggle('is-off', deafened || hearOffInGame);
-  deaf.setAttribute('aria-pressed', String(deafened));
-  $('#deafIcon').textContent = deafened || hearOffInGame ? '🙉' : '🎧';
-  $('#deafLabel').textContent = deafened ? 'ปิดหู' : 'หู';
-
-  const box = $('#rangeBox');
-  if (si) {
-    const r = si.range;
-    const max = Math.min(512, si.cap || 512);
-    $('#rangeNum').textContent = fmtRange(r);
-    $('#rangeLbl').textContent = si.locked ? '🔒 ล็อก' : (r < 0 ? 'ทั้งโลก' : 'วงไมค์');
-    box.classList.toggle('locked', !!si.locked);
-    box.classList.toggle('global', r < 0 && !si.locked);
-    // −: ปิดเฉพาะตอนอยู่ที่ 1 (โหมดทั้งโลกกด − กลับ 512 ได้)
-    $('#rangeDown').disabled = !!si.locked || (r >= 0 && r <= 1);
-    // +: คนทั่วไปหยุดที่ 512 / แอดมินที่ 512 กดต่อได้ → ทั้งโลก / โหมดทั้งโลกปิดปุ่ม +
-    $('#rangeUp').disabled = !!si.locked || r < 0 || (r >= max && !si.admin);
-    $('#rangeVal').disabled = !!si.locked;
-  }
-
-  const admin = !!(si && si.admin);
-  $('#adminBtn').classList.toggle('is-on', admin);
-  $('#adminBtn').setAttribute('aria-pressed', String(adminOpen));
-  $('#adminPanel').hidden = !adminOpen;
-  $('#adminLogin').hidden = admin;
-  $('#adminTools').hidden = !admin;
-  $('#adminLogout').hidden = !admin;
-  if (!admin && si && !si.adminEnabled && !$('#adminErr').textContent) {
-    $('#adminErr').textContent = 'เซิร์ฟเวอร์ยังไม่ได้ตั้งรหัสแอดมิน';
-  }
-  if (admin) {
-    $('#globalBtn').setAttribute('aria-pressed', String(si.range < 0));
-    $('#globalState').textContent = si.range < 0 ? 'เปิด' : 'ปิด';
-    $('#baseVal').textContent = String(Math.round(si.base));
-    $('#baseAuto').disabled = !si.override;
-  }
-
-  const notes = [];
-  if (smutedMe) notes.push('แอดมินปิดไมค์คุณอยู่');
-  else if (gameMuted) notes.push('ไมค์ถูกปิดในเกม');
-  if (hearOffInGame) notes.push('คุณปิดหูฟังในเกม');
-  if (si && si.locked) notes.push('วงไมค์ถูกตั้งโดยแอดมิน');
-  const n = $('#notice');
-  n.hidden = notes.length === 0;
-  n.textContent = notes.join(' · ');
-  syncFloatPanel();
-}
-
-async function sendRange(value) {
-  if (!session) return;
-  // Optimistic UI — Render (/api/range) is the source of truth and will confirm via SSE positions
-  if (selfInfo) {
-    if (value === null) selfInfo.range = selfInfo.base;
-    else selfInfo.range = value;
-  }
-  renderControls();
-  try {
-    const res = await api('/api/range', { token: session.token, range: value });
-    if (res && res.ok && res.data) {
-      if (res.data.self) selfInfo = { ...(selfInfo || {}), ...res.data.self };
-      else if (res.data.range !== undefined && selfInfo) selfInfo.range = res.data.range;
-      renderControls();
-    }
-  } catch (e) { /* next positions event from Render will resync */ }
-  try { nativeOverlayUpdate(); } catch (e) {}
-}
-
-/** Mic range steps: … 1 → 2 → 4 → 8 → 16 → 32 → … (×2 / ÷2), min 1 */
-function nextPow2Range(r, dir, max) {
-  const cur = Math.max(1, Math.round(Number(r) || 1));
-  if (dir > 0) {
-    let n = 1;
-    while (n <= cur && n < max) n *= 2;
-    return Math.min(max, n);
-  }
-  // down: previous power of two (or half if already power of two)
-  if (cur <= 1) return 1;
-  let n = 1;
-  while (n * 2 < cur) n *= 2;
-  // if cur is exactly power of 2, go to half; else snap down to n
-  if (n * 2 === cur) return Math.max(1, n);
-  return Math.max(1, n);
-}
-
-function rangeSteps() {
-  return [1, 2, 4, 8, 16, 32, 64, 128, 256, 512];
-}
-function nearestRangeStep(v) {
-  const steps = rangeSteps();
-  const n = Number(v);
-  if (!Number.isFinite(n) || n < 0) return steps[0];
-  let best = steps[0], bestD = Math.abs(n - best);
-  for (const s of steps) {
-    const d = Math.abs(n - s);
-    if (d < bestD) { best = s; bestD = d; }
-  }
-  return best;
-}
-function stepRange(dir) {
-  const si = selfInfo;
-  if (!si || si.locked) return;
-  const r = si.range;
-  const steps = rangeSteps();
-  const maxStep = 512;
-  // Admin whole-world mode: − กลับไป 512, + ไม่ทำอะไร
-  if (r < 0) {
-    if (dir < 0) sendRange(maxStep);
-    return;
-  }
-  const cur = nearestRangeStep(r);
-  let idx = steps.indexOf(cur);
-  if (idx < 0) idx = 0;
-  if (dir > 0) {
-    if (idx >= steps.length - 1) {
-      // ถึง 512 แล้ว — แอดมินกด + อีกครั้ง = ได้ยินทั้งโลก
-      if (si.admin) sendRange(-1);
-      return;
-    }
-    sendRange(steps[idx + 1]);
-  } else {
-    sendRange(steps[Math.max(0, idx - 1)]);
-  }
-}
-
-async function adminLogin() {
-  if (!session) return;
-  const pw = $('#adminPw').value;
-  if (!pw) { $('#adminErr').textContent = 'กรอกรหัสแอดมิน'; return; }
-  $('#adminErr').textContent = '';
-  $('#adminPwBtn').disabled = true;
-  try {
-    const res = await api('/api/admin/login', { token: session.token, password: pw });
-    if (res.ok) {
-      $('#adminPw').value = '';
-      if (selfInfo) selfInfo.admin = true;
-    } else {
-      $('#adminErr').textContent = res.data.message || 'ปลดล็อกไม่สำเร็จ';
-    }
-  } catch (e) {
-    $('#adminErr').textContent = 'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้';
-  }
-  $('#adminPwBtn').disabled = false;
-  renderControls();
-}
-
-function adminAction(action, target, value) {
-  if (!session) return;
-  api('/api/admin/action', { token: session.token, action, target, value }).catch(() => {});
-}
-
-function makeRow(key) {
-  const el = document.createElement('li');
-  el.className = 'player';
-  const dot = document.createElement('span');
-  dot.className = 'dot';
-  const info = document.createElement('div');
-  info.className = 'info';
-  const nameEl = document.createElement('div');
-  nameEl.className = 'pname';
-  const meta = document.createElement('div');
-  meta.className = 'pmeta';
-  info.append(nameEl, meta);
-  const slider = document.createElement('input');
-  slider.type = 'range';
-  slider.min = '0';
-  slider.max = '200';
-  slider.value = String(Math.round((userVolume.has(key) ? userVolume.get(key) : 1) * 100));
-  slider.setAttribute('aria-label', 'ระดับเสียงของผู้เล่น');
-  slider.addEventListener('input', () => {
-    userVolume.set(key, Number(slider.value) / 100);
-    updateAudio();
-  });
-  const actions = document.createElement('div');
-  actions.className = 'actions';
-  actions.hidden = true;
-  const muteBtn = document.createElement('button');
-  muteBtn.addEventListener('click', () => adminAction('mute', key, !muteBtn.classList.contains('on')));
-  const globeBtn = document.createElement('button');
-  globeBtn.className = 'globe';
-  globeBtn.textContent = '🌍 ทั้งโลก';
-  globeBtn.addEventListener('click', () => adminAction('player_range', key, globeBtn.classList.contains('on') ? null : -1));
-  const resetBtn = document.createElement('button');
-  resetBtn.textContent = '↺ รีเซ็ต';
-  resetBtn.addEventListener('click', () => adminAction('reset_player', key));
-  actions.append(muteBtn, globeBtn, resetBtn);
-  el.append(dot, info, slider, actions);
-  $('#players').append(el);
-  const row = { el, dot, nameEl, meta, actions, muteBtn, globeBtn };
-  rows.set(key, row);
-  return row;
-}
-
-function renderUI() {
-  if (!session) return;
-  const me = positions.get(session.name.toLowerCase());
-  // Status text is owned by updateStatusUI / positions / status events
-  if (me) {
-    updateStatusUI('connected', session.name);
-  } else {
-    updateStatusUI('waiting', session.name);
-  }
-  $('#meDot').classList.toggle('speaking', !micOff() && localAnalyser && level(localAnalyser) > 0.04);
-
-  const seen = new Set();
-  positions.forEach((p, key) => {
-    if (key === session.name.toLowerCase() || p.bot) return;
-    seen.add(key);
-    const row = rows.get(key) || makeRow(key);
-    const peer = peers.get(p.name);
-    const connected = !!(peer && peer.hasAudio);
-    const a = audibility(me, p);
-    let meta;
-    let near = false;
-    if (!connected) {
-      meta = 'ยังไม่ได้เปิดแอพเสียง';
-    } else if (!me) {
-      meta = 'เชื่อมต่อแล้ว';
-    } else if (p.mic === false) {
-      meta = p.smuted ? 'ถูกแอดมินปิดไมค์' : 'ปิดไมค์ในเกม';
-    } else if (me.hear === false) {
-      meta = 'คุณปิดหูฟังในเกม';
-    } else if (deafened) {
-      meta = 'คุณปิดหูอยู่';
-    } else if (Number(p.range) < 0) {
-      meta = '📣 พูดทั้งโลก';
-      near = true;
-    } else if (a.mode === 'call') {
-      meta = '📞 อยู่ในสาย';
-      near = true;
-    } else if (me.dim !== p.dim) {
-      meta = 'อยู่คนละมิติ';
-    } else {
-      const d = Math.hypot(me.x - p.x, me.y - p.y, me.z - p.z);
-      near = a.mode === 'spatial';
-      meta = Math.round(d) + ' บล็อก' + (near ? '' : ' · ไกลเกินไป');
-    }
-    row.nameEl.textContent = (p.admin || p.op ? '🛡️ ' : '') + p.name;
-    row.meta.textContent = meta + (p.op ? ' · OP' : (p.admin ? ' · แอดมิน' : ''));
-    row.actions.hidden = !(selfInfo && selfInfo.admin);
-    row.muteBtn.classList.toggle('on', !!p.smuted);
-    row.muteBtn.textContent = p.smuted ? '🔇 ปิดไมค์อยู่' : '🔇 ปิดไมค์';
-    row.globeBtn.classList.toggle('on', !!p.forced && Number(p.range) < 0);
-    row.el.classList.toggle('offline', !connected);
-    row.el.classList.toggle('near', near);
-    row.dot.classList.toggle('speaking', connected && peer.analyser && level(peer.analyser) > 0.04 && near);
-  });
-  rows.forEach((row, key) => {
-    if (!seen.has(key)) { row.el.remove(); rows.delete(key); }
-  });
-  $('#empty').hidden = seen.size > 0;
-}
-
-// ---------- background keep-alive ----------
-// Hidden pages get their timers throttled and may be frozen. While a (near-silent) audio element is
-// "playing" with a media session, browsers treat the page as a media player and keep it running;
-// a Worker-driven ticker keeps the server heartbeat steady. Native shells (APK/iOS) add a foreground
-// service / background-audio mode on top of this.
-let bgAudio = null;
-
-function silentWavUrl() {
-  const sr = 8000, n = sr;
-  const buf = new ArrayBuffer(44 + n);
-  const v = new DataView(buf);
-  const w = (o, str) => { for (let i = 0; i < str.length; i++) v.setUint8(o + i, str.charCodeAt(i)); };
-  w(0, 'RIFF'); v.setUint32(4, 36 + n, true); w(8, 'WAVE'); w(12, 'fmt ');
-  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
-  v.setUint32(24, sr, true); v.setUint32(28, sr, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true);
-  w(36, 'data'); v.setUint32(40, n, true);
-  const px = new Uint8Array(buf, 44);
-  for (let i = 0; i < n; i++) px[i] = 128 + ((i >> 5) & 1 ? 1 : -1); // +-1 LSB: not digital silence, still inaudible
-  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
-}
-
-function bgPrepare() {
-  try {
-    if (!bgAudio) {
-      bgAudio = new Audio(silentWavUrl());
-      bgAudio.loop = true;
-      bgAudio.volume = 0.05;
-    }
-    const pr = bgAudio.play();
-    if (pr && pr.catch) pr.catch(() => {});
-  } catch (e) { /* ignore */ }
-}
-
-function bgStart() {
-  try {
-    bgPrepare();
-    if (!('mediaSession' in navigator)) return;
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: 'Proximity Voice',
-      artist: session ? session.name : '',
-      album: 'Minecraft',
-    });
-    navigator.mediaSession.playbackState = 'playing';
-    const set = (a, f) => { try { navigator.mediaSession.setActionHandler(a, f); } catch (e) { /* unsupported */ } };
-    set('play', () => { bgPrepare(); navigator.mediaSession.playbackState = 'playing'; });
-    // lock-screen / headset buttons: pause = mute mic, prev/next = mic range - / +
-    set('pause', () => { if (!gameMuted) setMuted(!muted); bgPrepare(); navigator.mediaSession.playbackState = 'playing'; });
-    set('previoustrack', () => stepRange(-1));
-    set('nexttrack', () => stepRange(1));
-  } catch (e) { /* ignore */ }
-}
-
-function bgStop() {
-  try {
-    if (bgAudio) bgAudio.pause();
-    if ('mediaSession' in navigator) {
-      navigator.mediaSession.playbackState = 'none';
-      navigator.mediaSession.metadata = null;
-    }
-  } catch (e) { /* ignore */ }
-}
-
-/** setInterval that is not throttled in background tabs (runs in a Worker). */
-function makeTicker(fn, ms) {
-  try {
-    const src = 'let t=null;onmessage=function(e){if(e.data==="stop"){clearInterval(t);close();}else{t=setInterval(function(){postMessage(1)},e.data);}}';
-    const w = new Worker(URL.createObjectURL(new Blob([src], { type: 'application/javascript' })));
-    w.onmessage = fn;
-    w.postMessage(ms);
-    return { stop() { try { w.postMessage('stop'); } catch (e) { /* ignore */ } } };
-  } catch (e) {
-    const id = setInterval(fn, ms);
-    return { stop() { clearInterval(id); } };
-  }
-}
-
-async function requestWakeLock() {
-  try {
-    if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen');
-  } catch (e) { /* ignore */ }
-}
-
-function releaseWakeLock() {
-  try { if (wakeLock) wakeLock.release(); } catch (e) { /* ignore */ }
-  wakeLock = null;
-}
-
-// ---------- wiring ----------
-
-$('#joinBtn').addEventListener('click', start);
-$('#gamertag').addEventListener('keydown', (e) => { if (e.key === 'Enter') start(); });
-$('#leaveBtn').addEventListener('click', leave);
-$('#micBtn').addEventListener('click', () => {
-  if (gameMuted) return;
-  if (deafened) setDeafened(false); // like Discord: un-deafen first
-  else setMuted(!muted);
-});
-$('#deafBtn').addEventListener('click', () => setDeafened(!deafened));
-$('#rangeDown').addEventListener('click', () => stepRange(-1));
-$('#rangeUp').addEventListener('click', () => stepRange(1));
-$('#rangeVal').addEventListener('click', () => { if (selfInfo && !selfInfo.locked) sendRange(null); });
-$('#adminBtn').addEventListener('click', () => { adminOpen = !adminOpen; renderControls(); });
-$('#adminPwBtn').addEventListener('click', adminLogin);
-$('#adminPw').addEventListener('keydown', (e) => { if (e.key === 'Enter') adminLogin(); });
-$('#adminLogout').addEventListener('click', async () => {
-  if (session) await api('/api/admin/logout', { token: session.token }).catch(() => {});
-  if (selfInfo) selfInfo.admin = false;
-  renderControls();
-});
-$('#globalBtn').addEventListener('click', () => { if (selfInfo) sendRange(selfInfo.range < 0 ? null : -1); });
-$('#baseDown').addEventListener('click', () => {
-  if (selfInfo) { const steps = rangeSteps(); const cur = nearestRangeStep(selfInfo.base); const i = Math.max(0, steps.indexOf(cur)); adminAction('base_range', '', steps[Math.max(0, i - 1)]); }
-});
-$('#baseUp').addEventListener('click', () => {
-  if (selfInfo) { const steps = rangeSteps(); const cur = nearestRangeStep(selfInfo.base); const i = Math.max(0, steps.indexOf(cur)); adminAction('base_range', '', steps[Math.min(steps.length - 1, i + 1)]); }
-});
-$('#baseAuto').addEventListener('click', () => adminAction('base_range', '', null));
-$('#masterVol').addEventListener('input', (e) => {
-  masterVol = Number(e.target.value) / 100;
-  if (masterGain) masterGain.gain.value = masterVol;
-});
-document.addEventListener('keydown', (e) => {
-  if (!session || document.activeElement.tagName === 'INPUT') return;
-  const k = e.key.toLowerCase();
-  if (k === 'm') $('#micBtn').click();
-  if (k === 'd') $('#deafBtn').click();
-});
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && session) {
-    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
-    requestWakeLock();
-    if (bgAudio && bgAudio.paused) bgAudio.play().catch(() => {});
-  }
-});
-// coming back online / from the back-forward cache: make sure the event stream is alive
-function ensureConnected() {
-  if (session && !leaving && !es) scheduleReconnect(0);
-}
-window.addEventListener('online', ensureConnected);
-window.addEventListener('pageshow', ensureConnected);
-
-try { $('#gamertag').value = localStorage.getItem('pv_name') || ''; } catch (e) { /* ignore */ }
-
-// install as app
-let deferredInstall = null;
-window.addEventListener('beforeinstallprompt', (e) => {
-  e.preventDefault();
-  deferredInstall = e;
-  $('#installBtn').hidden = false;
-});
-$('#installBtn').addEventListener('click', async () => {
-  if (!deferredInstall) return;
-  deferredInstall.prompt();
-  await deferredInstall.userChoice.catch(() => {});
-  deferredInstall = null;
-  $('#installBtn').hidden = true;
-});
-if (/iphone|ipad|ipod/i.test(navigator.userAgent) && !window.matchMedia('(display-mode: standalone)').matches) {
-  $('#iosHint').hidden = false;
-}
-
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw.js').catch(() => {});
-}
-
-// ---------- Discord-style floating panel ----------
-(function initFloatPanel() {
-  const panel = $('#floatPanel');
-  if (!panel) return;
-
-  $('#floatMic')?.addEventListener('click', () => {
-    if (gameMuted) return;
-    if (deafened) setDeafened(false);
-    else setMuted(!muted);
-  });
-  $('#floatDeaf')?.addEventListener('click', () => setDeafened(!deafened));
-  $('#floatLeave')?.addEventListener('click', leave);
-
-  let expanded = false;
-  $('#floatExpand')?.addEventListener('click', () => {
-    expanded = !expanded;
-    const extra = $('#floatExtra');
-    if (extra) extra.hidden = !expanded;
-    const btn = $('#floatExpand');
-    if (btn) btn.setAttribute('aria-pressed', String(expanded));
-    const ico = $('#floatExpandIcon');
-    if (ico) ico.textContent = expanded ? '▾' : '▴';
-  });
-
-  $('#floatVol')?.addEventListener('input', (e) => {
-    masterVol = Number(e.target.value) / 100;
-    if (masterGain) masterGain.gain.value = masterVol;
-    const mv = $('#masterVol');
-    if (mv) mv.value = e.target.value;
-  });
-  $('#floatRangeDown')?.addEventListener('click', () => stepRange(-1));
-  $('#floatRangeUp')?.addEventListener('click', () => stepRange(1));
-
-  // Drag to reposition (touch + mouse)
-  const handle = $('#floatDrag') || panel;
-  let dragging = false;
-  let startX = 0, startY = 0, origLeft = 0, origTop = 0;
-
-  function pointerDown(clientX, clientY) {
-    dragging = true;
-    panel.classList.add('dragging');
-    const rect = panel.getBoundingClientRect();
-    startX = clientX;
-    startY = clientY;
-    origLeft = rect.left;
-    origTop = rect.top;
-    panel.style.left = rect.left + 'px';
-    panel.style.top = rect.top + 'px';
-    panel.style.right = 'auto';
-    panel.style.bottom = 'auto';
-    panel.style.margin = '0';
-    panel.style.width = rect.width + 'px';
-  }
-  function pointerMove(clientX, clientY) {
-    if (!dragging) return;
-    const dx = clientX - startX;
-    const dy = clientY - startY;
-    let nx = origLeft + dx;
-    let ny = origTop + dy;
-    const maxX = window.innerWidth - panel.offsetWidth - 4;
-    const maxY = window.innerHeight - panel.offsetHeight - 4;
-    nx = Math.max(4, Math.min(maxX, nx));
-    ny = Math.max(4, Math.min(maxY, ny));
-    panel.style.left = nx + 'px';
-    panel.style.top = ny + 'px';
-  }
-  function pointerUp() {
-    if (!dragging) return;
-    dragging = false;
-    panel.classList.remove('dragging');
-  }
-
-  handle.addEventListener('mousedown', (e) => {
-    e.preventDefault();
-    pointerDown(e.clientX, e.clientY);
-  });
-  window.addEventListener('mousemove', (e) => pointerMove(e.clientX, e.clientY));
-  window.addEventListener('mouseup', pointerUp);
-
-  handle.addEventListener('touchstart', (e) => {
-    if (!e.touches[0]) return;
-    pointerDown(e.touches[0].clientX, e.touches[0].clientY);
-  }, { passive: true });
-  window.addEventListener('touchmove', (e) => {
-    if (!dragging || !e.touches[0]) return;
-    pointerMove(e.touches[0].clientX, e.touches[0].clientY);
-  }, { passive: true });
-  window.addEventListener('touchend', pointerUp);
-})();
