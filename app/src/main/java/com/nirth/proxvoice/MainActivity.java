@@ -49,6 +49,8 @@ import java.nio.charset.StandardCharsets;
 public class MainActivity extends Activity {
     private static final int REQ_AUDIO = 1;
     private static final int REQ_OVERLAY = 2;
+    private static final int REQ_NOTIF = 3;
+    private boolean notifAsked = false;
     private static final String PREFS = "proxvoice";
     private static final String KEY_URL = "server_url";
 
@@ -374,52 +376,69 @@ public class MainActivity extends Activity {
     private void requestOverlayPermission() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return;
         if (canDrawOverlays()) return;
-        Toast.makeText(this, "อนุญาต 'แสดงทับแอปอื่น' เพื่อใช้ Voice Overlay", Toast.LENGTH_LONG).show();
-        Intent intent = new Intent(
-                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                Uri.parse("package:" + getPackageName())
-        );
-        startActivityForResult(intent, REQ_OVERLAY);
+        Toast.makeText(this, "อนุญาต 'แสดงทับแอปอื่น' เพื่อใช้แถบลอย (ไม่อนุญาตก็ใช้ปุ่มในแถบแจ้งเตือนได้)", Toast.LENGTH_LONG).show();
+        try {
+            Intent intent = new Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:" + getPackageName())
+            );
+            startActivityForResult(intent, REQ_OVERLAY);
+        } catch (Exception e) {
+            // some phones (Go / custom ROMs) have no such screen: open the app's own settings page instead
+            try {
+                startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:" + getPackageName())));
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private void ensureNotificationPermission() {
+        if (Build.VERSION.SDK_INT < 33 || notifAsked) return;
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            notifAsked = true;
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQ_NOTIF);
+        }
+    }
+
+    private Intent overlayIntent(String action, String name, String status, boolean muted, boolean deafened, String range) {
+        Intent i = new Intent(this, OverlayService.class);
+        i.setAction(action);
+        i.putExtra(OverlayService.EXTRA_NAME, name);
+        i.putExtra(OverlayService.EXTRA_STATUS, status);
+        i.putExtra(OverlayService.EXTRA_MUTED, muted);
+        i.putExtra(OverlayService.EXTRA_DEAFENED, deafened);
+        i.putExtra(OverlayService.EXTRA_RANGE, range != null ? range : "\u2013");
+        return i;
     }
 
     private void startOverlay(String name, String status, boolean muted, boolean deafened, String range) {
         overlayWanted = true;
-        if (!canDrawOverlays()) {
-            requestOverlayPermission();
+        // Foreground service of type "microphone" needs the mic permission first (Android 14+ throws otherwise)
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_AUDIO);
             return;
         }
-        Intent i = new Intent(this, OverlayService.class);
-        i.setAction(OverlayService.ACTION_SHOW);
-        i.putExtra(OverlayService.EXTRA_NAME, name);
-        i.putExtra(OverlayService.EXTRA_STATUS, status);
-        i.putExtra(OverlayService.EXTRA_MUTED, muted);
-        i.putExtra(OverlayService.EXTRA_DEAFENED, deafened);
-        i.putExtra(OverlayService.EXTRA_RANGE, range != null ? range : "–");
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(i);
-        } else {
-            startService(i);
-        }
+        // No early return when the floating-window permission is missing: the notification buttons still work.
+        if (!canDrawOverlays()) requestOverlayPermission();
+        ensureNotificationPermission();
+        OverlayService.push(this, overlayIntent(OverlayService.ACTION_SHOW, name, status, muted, deafened, range), true);
     }
 
     private void updateOverlay(String name, String status, boolean muted, boolean deafened, String range) {
         if (!overlayWanted) return;
-        Intent i = new Intent(this, OverlayService.class);
-        i.setAction(OverlayService.ACTION_UPDATE);
-        i.putExtra(OverlayService.EXTRA_NAME, name);
-        i.putExtra(OverlayService.EXTRA_STATUS, status);
-        i.putExtra(OverlayService.EXTRA_MUTED, muted);
-        i.putExtra(OverlayService.EXTRA_DEAFENED, deafened);
-        i.putExtra(OverlayService.EXTRA_RANGE, range != null ? range : "–");
-        startService(i);
+        OverlayService.push(this, overlayIntent(OverlayService.ACTION_UPDATE, name, status, muted, deafened, range), false);
     }
 
     private void stopOverlay() {
         overlayWanted = false;
-        Intent i = new Intent(this, OverlayService.class);
-        i.setAction(OverlayService.ACTION_HIDE);
-        startService(i);
-        stopService(new Intent(this, OverlayService.class));
+        try {
+            Intent i = new Intent(this, OverlayService.class);
+            i.setAction(OverlayService.ACTION_HIDE);
+            OverlayService.push(this, i, false);
+            stopService(new Intent(this, OverlayService.class));
+        } catch (Exception ignored) {
+        }
     }
 
     public class ProxVoiceBridge {
@@ -453,7 +472,7 @@ public class MainActivity extends Activity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQ_OVERLAY && overlayWanted && canDrawOverlays()) {
-            startOverlay("Proximity Voice", "Connected", false, false, "–");
+            OverlayService.push(this, overlayIntent(OverlayService.ACTION_SHOW, "Proximity Voice", "Connected", false, false, "\u2013"), true);
         }
     }
 
@@ -461,16 +480,8 @@ public class MainActivity extends Activity {
     protected void onPause() {
         super.onPause();
         // Keep voice session + floating overlay while user is in Minecraft
-        if (overlayWanted && canDrawOverlays()) {
-            Intent i = new Intent(this, OverlayService.class);
-            i.setAction(OverlayService.ACTION_SHOW);
-            i.putExtra(OverlayService.EXTRA_NAME, "Proximity Voice");
-            i.putExtra(OverlayService.EXTRA_STATUS, "In game");
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(i);
-            } else {
-                startService(i);
-            }
+        if (overlayWanted && checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            OverlayService.push(this, overlayIntent(OverlayService.ACTION_SHOW, "Proximity Voice", "In game", false, false, "\u2013"), true);
         }
         if (web != null) {
             web.evaluateJavascript(

@@ -7,6 +7,9 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ServiceInfo;
+import android.provider.Settings;
+import android.widget.Toast;
 import android.graphics.PixelFormat;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
@@ -47,7 +50,10 @@ public class OverlayService extends Service {
     private static final int COL_OK = 0xFF3DDC97;
     private static final int COL_WAIT = 0xFFF0B429;
 
+    private static OverlayService instance;
+
     private WindowManager windowManager;
+    private boolean overlayFailed = false;
     private View overlayView;
     private WindowManager.LayoutParams params;
     private LinearLayout root;
@@ -68,22 +74,54 @@ public class OverlayService extends Service {
     private int startX, startY;
     private float touchX, touchY;
 
+    /** Same-process shortcut: works even when the app is in the background (no startService needed). */
+    public static void push(Context c, Intent i, boolean foreground) {
+        OverlayService inst = instance;
+        if (inst != null) {
+            inst.handle(i);
+            return;
+        }
+        try {
+            if (foreground && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) c.startForegroundService(i);
+            else c.startService(i);
+        } catch (Exception ignored) {
+            // background start refused by the OS: the next foreground moment will retry
+        }
+    }
+
     @Override
     public void onCreate() {
         super.onCreate();
+        instance = this;
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         createChannel();
-        startForeground(NOTIF_ID, buildNotification());
-        addOverlay();
+        try {
+            Notification n = buildNotification();
+            if (Build.VERSION.SDK_INT >= 30) {
+                startForeground(NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
+            } else {
+                startForeground(NOTIF_ID, n);
+            }
+        } catch (Exception e) {
+            // e.g. microphone permission missing: give up cleanly instead of crashing the app
+            stopSelf();
+            return;
+        }
+        ensureOverlay();
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent == null) return START_STICKY;
+        return handle(intent) ? START_STICKY : START_NOT_STICKY;
+    }
+
+    /** @return false when the service stopped itself. */
+    private boolean handle(Intent intent) {
         String action = intent.getAction();
         if (ACTION_HIDE.equals(action)) {
             stopSelf();
-            return START_NOT_STICKY;
+            return false;
         }
         if (ACTION_UPDATE.equals(action) || ACTION_SHOW.equals(action)) {
             if (intent.hasExtra(EXTRA_NAME)) {
@@ -91,8 +129,8 @@ public class OverlayService extends Service {
                 if (n != null && !n.isEmpty()) displayName = n;
             }
             if (intent.hasExtra(EXTRA_STATUS)) {
-                String s = intent.getStringExtra(EXTRA_STATUS);
-                if (s != null) statusText = s;
+                String st = intent.getStringExtra(EXTRA_STATUS);
+                if (st != null) statusText = st;
             }
             muted = intent.getBooleanExtra(EXTRA_MUTED, muted);
             deafened = intent.getBooleanExtra(EXTRA_DEAFENED, deafened);
@@ -100,14 +138,37 @@ public class OverlayService extends Service {
                 String r = intent.getStringExtra(EXTRA_RANGE);
                 if (r != null && !r.isEmpty()) rangeLabel = r;
             }
+            if (ACTION_SHOW.equals(action)) overlayFailed = false; // retry (e.g. permission was just granted)
+            ensureOverlay();
             applyUi();
             updateNotification();
         }
-        return START_STICKY;
+        return true;
+    }
+
+    private boolean canDraw() {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this);
+    }
+
+    /** The floating bar is a bonus: if the phone refuses it, the notification buttons still work. */
+    private void ensureOverlay() {
+        if (overlayView != null || overlayFailed || windowManager == null) return;
+        if (!canDraw()) return;
+        try {
+            addOverlay();
+        } catch (Throwable t) {
+            overlayView = null;
+            overlayFailed = true;
+            try {
+                Toast.makeText(this, "เครื่องนี้ไม่ให้แสดงแถบลอย ใช้ปุ่มในแถบแจ้งเตือนแทน", Toast.LENGTH_LONG).show();
+            } catch (Throwable ignored) {
+            }
+        }
     }
 
     @Override
     public void onDestroy() {
+        if (instance == this) instance = null;
         removeOverlay();
         super.onDestroy();
     }
@@ -320,6 +381,14 @@ public class OverlayService extends Service {
         if (nm != null) nm.createNotificationChannel(ch);
     }
 
+    private Notification.Action act(String label, String action, int req) {
+        Intent i = new Intent(action);
+        i.setPackage(getPackageName());
+        PendingIntent pi = PendingIntent.getBroadcast(
+                this, req, i, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        return new Notification.Action.Builder(0, label, pi).build();
+    }
+
     private Notification buildNotification() {
         Intent open = new Intent(this, MainActivity.class);
         open.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
@@ -334,11 +403,18 @@ public class OverlayService extends Service {
         } else {
             b = new Notification.Builder(this);
         }
-        return b.setContentTitle("Proximity Voice")
-                .setContentText(displayName + " · " + statusText)
+        boolean off = muted || deafened;
+        String state = (deafened ? "ปิดหู" : (muted ? "ปิดไมค์" : "เปิดไมค์"))
+                + " · วง " + (rangeLabel != null ? rangeLabel : "\u2013");
+        return b.setContentTitle(displayName + " · " + statusText)
+                .setContentText(state)
                 .setSmallIcon(android.R.drawable.ic_btn_speak_now)
                 .setContentIntent(pi)
                 .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .addAction(act(off ? "เปิดไมค์" : "ปิดไมค์", ACTION_TOGGLE_MIC, 1))
+                .addAction(act("วง \u2212", ACTION_RANGE_DOWN, 2))
+                .addAction(act("วง +", ACTION_RANGE_UP, 3))
                 .build();
     }
 
