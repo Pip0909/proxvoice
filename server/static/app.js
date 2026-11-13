@@ -237,6 +237,8 @@ async function start() {
   const AC = window.AudioContext || window.webkitAudioContext;
   audioCtx = new AC();
   audioCtx.resume();
+  audioCtx.onstatechange = () => { if (audioCtx && session && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {}); };
+  bgPrepare(); // must start inside the click so iOS/Chrome allow the keep-alive audio
 
   try {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -298,6 +300,7 @@ async function start() {
   openEvents();
   startTimers();
   requestWakeLock();
+  bgStart();
 }
 
 function cleanupAudio() {
@@ -313,6 +316,7 @@ function leave() {
   leaving = true;
   clearTimeout(reconnectTimer);
   stopTimers();
+  bgStop();
   if (es) { es.close(); es = null; }
   closeAllPeers();
   cleanupAudio();
@@ -405,7 +409,7 @@ async function reconnect() {
 
 function startTimers() {
   stopTimers();
-  pingTimer = setInterval(async () => {
+  pingTimer = makeTicker(async () => {
     if (!session || !es) return;
     try {
       const r = await api('/api/ping', { token: session.token });
@@ -420,7 +424,7 @@ function startTimers() {
 }
 
 function stopTimers() {
-  clearInterval(pingTimer);
+  if (pingTimer && pingTimer.stop) pingTimer.stop();
   clearInterval(uiTimer);
   pingTimer = uiTimer = null;
 }
@@ -885,6 +889,82 @@ function renderUI() {
   $('#empty').hidden = seen.size > 0;
 }
 
+// ---------- background keep-alive ----------
+// Hidden pages get their timers throttled and may be frozen. While a (near-silent) audio element is
+// "playing" with a media session, browsers treat the page as a media player and keep it running;
+// a Worker-driven ticker keeps the server heartbeat steady. Native shells (APK/iOS) add a foreground
+// service / background-audio mode on top of this.
+let bgAudio = null;
+
+function silentWavUrl() {
+  const sr = 8000, n = sr;
+  const buf = new ArrayBuffer(44 + n);
+  const v = new DataView(buf);
+  const w = (o, str) => { for (let i = 0; i < str.length; i++) v.setUint8(o + i, str.charCodeAt(i)); };
+  w(0, 'RIFF'); v.setUint32(4, 36 + n, true); w(8, 'WAVE'); w(12, 'fmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, sr, true); v.setUint32(28, sr, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true);
+  w(36, 'data'); v.setUint32(40, n, true);
+  const px = new Uint8Array(buf, 44);
+  for (let i = 0; i < n; i++) px[i] = 128 + ((i >> 5) & 1 ? 1 : -1); // +-1 LSB: not digital silence, still inaudible
+  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+}
+
+function bgPrepare() {
+  try {
+    if (!bgAudio) {
+      bgAudio = new Audio(silentWavUrl());
+      bgAudio.loop = true;
+      bgAudio.volume = 0.05;
+    }
+    const pr = bgAudio.play();
+    if (pr && pr.catch) pr.catch(() => {});
+  } catch (e) { /* ignore */ }
+}
+
+function bgStart() {
+  try {
+    bgPrepare();
+    if (!('mediaSession' in navigator)) return;
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: 'Proximity Voice',
+      artist: session ? session.name : '',
+      album: 'Minecraft',
+    });
+    navigator.mediaSession.playbackState = 'playing';
+    const set = (a, f) => { try { navigator.mediaSession.setActionHandler(a, f); } catch (e) { /* unsupported */ } };
+    set('play', () => { bgPrepare(); navigator.mediaSession.playbackState = 'playing'; });
+    // lock-screen / headset buttons: pause = mute mic, prev/next = mic range - / +
+    set('pause', () => { if (!gameMuted) setMuted(!muted); bgPrepare(); navigator.mediaSession.playbackState = 'playing'; });
+    set('previoustrack', () => stepRange(-1));
+    set('nexttrack', () => stepRange(1));
+  } catch (e) { /* ignore */ }
+}
+
+function bgStop() {
+  try {
+    if (bgAudio) bgAudio.pause();
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.playbackState = 'none';
+      navigator.mediaSession.metadata = null;
+    }
+  } catch (e) { /* ignore */ }
+}
+
+/** setInterval that is not throttled in background tabs (runs in a Worker). */
+function makeTicker(fn, ms) {
+  try {
+    const src = 'let t=null;onmessage=function(e){if(e.data==="stop"){clearInterval(t);close();}else{t=setInterval(function(){postMessage(1)},e.data);}}';
+    const w = new Worker(URL.createObjectURL(new Blob([src], { type: 'application/javascript' })));
+    w.onmessage = fn;
+    w.postMessage(ms);
+    return { stop() { try { w.postMessage('stop'); } catch (e) { /* ignore */ } } };
+  } catch (e) {
+    const id = setInterval(fn, ms);
+    return { stop() { clearInterval(id); } };
+  }
+}
+
 async function requestWakeLock() {
   try {
     if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen');
@@ -940,8 +1020,15 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && session) {
     if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
     requestWakeLock();
+    if (bgAudio && bgAudio.paused) bgAudio.play().catch(() => {});
   }
 });
+// coming back online / from the back-forward cache: make sure the event stream is alive
+function ensureConnected() {
+  if (session && !leaving && !es) scheduleReconnect(0);
+}
+window.addEventListener('online', ensureConnected);
+window.addEventListener('pageshow', ensureConnected);
 
 try { $('#gamertag').value = localStorage.getItem('pv_name') || ''; } catch (e) { /* ignore */ }
 

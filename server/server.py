@@ -62,6 +62,7 @@ FAIL_LIMIT = 10          # wrong admin passwords per window per IP
 FAIL_WINDOW = 300.0
 POSITION_STALE = float(os.environ.get("VC_STALE_SECONDS", "6"))
 SESSION_TIMEOUT = 25.0  # no ping/signal for this long -> session is dead
+SESSION_TIMEOUT_LIVE = 120.0  # ...unless its event stream is still open (backgrounded phone, throttled timers)
 
 
 def ice_servers():
@@ -433,7 +434,7 @@ def drop_session(token):
 
 
 def alive(s):
-    return time.time() - s["last_seen"] < SESSION_TIMEOUT
+    return time.time() - s["last_seen"] < (SESSION_TIMEOUT_LIVE if s.get("connected") else SESSION_TIMEOUT)
 
 
 async def join_post(request):

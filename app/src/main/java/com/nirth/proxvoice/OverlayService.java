@@ -9,6 +9,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.provider.Settings;
+import android.os.PowerManager;
 import android.widget.Toast;
 import android.graphics.PixelFormat;
 import android.graphics.drawable.GradientDrawable;
@@ -54,6 +55,7 @@ public class OverlayService extends Service {
 
     private WindowManager windowManager;
     private boolean overlayFailed = false;
+    private PowerManager.WakeLock cpuLock;
     private View overlayView;
     private WindowManager.LayoutParams params;
     private LinearLayout root;
@@ -106,6 +108,14 @@ public class OverlayService extends Service {
             // e.g. microphone permission missing: give up cleanly instead of crashing the app
             stopSelf();
             return;
+        }
+        try {
+            // keep the CPU awake so voice keeps flowing with the screen off
+            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+            cpuLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "proxvoice:voice");
+            cpuLock.setReferenceCounted(false);
+            cpuLock.acquire();
+        } catch (Exception ignored) {
         }
         ensureOverlay();
     }
@@ -169,6 +179,10 @@ public class OverlayService extends Service {
     @Override
     public void onDestroy() {
         if (instance == this) instance = null;
+        try {
+            if (cpuLock != null && cpuLock.isHeld()) cpuLock.release();
+        } catch (Exception ignored) {
+        }
         removeOverlay();
         super.onDestroy();
     }

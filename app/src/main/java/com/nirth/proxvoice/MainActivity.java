@@ -111,6 +111,10 @@ public class MainActivity extends Activity {
         s.setAllowFileAccess(false);
 
         web.addJavascriptInterface(new ProxVoiceBridge(), "ProxVoiceNative");
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // keep the page's renderer at full priority when the app is not on screen (voice must not stall)
+            web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
+        }
 
         web.setWebViewClient(new WebViewClient() {
             @Override
@@ -393,6 +397,23 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** Doze / OEM battery savers cut the network for background apps; ask once to be exempt. */
+    private void askBatteryExemption() {
+        try {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return;
+            android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
+            if (pm == null || pm.isIgnoringBatteryOptimizations(getPackageName())) return;
+            if (prefs().getBoolean("battery_asked", false)) return;
+            prefs().edit().putBoolean("battery_asked", true).apply();
+            Toast.makeText(this, "กด 'อนุญาต' เพื่อให้เสียงทำงานเบื้องหลังตอนจอดับ", Toast.LENGTH_LONG).show();
+            Intent i = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:" + getPackageName()));
+            startActivity(i);
+        } catch (Exception ignored) {
+            // screen missing on this ROM: skip
+        }
+    }
+
     private void ensureNotificationPermission() {
         if (Build.VERSION.SDK_INT < 33 || notifAsked) return;
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -422,6 +443,7 @@ public class MainActivity extends Activity {
         // No early return when the floating-window permission is missing: the notification buttons still work.
         if (!canDrawOverlays()) requestOverlayPermission();
         ensureNotificationPermission();
+        askBatteryExemption();
         OverlayService.push(this, overlayIntent(OverlayService.ACTION_SHOW, name, status, muted, deafened, range), true);
     }
 
