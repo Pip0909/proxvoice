@@ -386,8 +386,12 @@ function openEvents() {
   });
   mine.addEventListener('peer_joined', (e) => {
     const d = JSON.parse(e.data);
-    closePeer(d.name); // drop any stale connection from a previous session
-    createPeer(d.name, false);
+    // Keep a connection that is already working (the friend may have opened the app
+    // before entering the game); only rebuild a dead one, and offer from our side.
+    const ex = peers.get(d.name);
+    if (ex && (ex.hasAudio || ['connected', 'connecting', 'new'].includes(ex.pc.connectionState))) return;
+    closePeer(d.name);
+    createPeer(d.name, true);
   });
   mine.addEventListener('peer_left', (e) => {
     closePeer(JSON.parse(e.data).name);
@@ -454,6 +458,20 @@ function sendSignal(to, data) {
   api('/api/signal', { token: session.token, to, data }).catch(() => {});
 }
 
+const peerTries = new Map();
+function retryPeer(peer, delay) {
+  setTimeout(() => {
+    if (!session || leaving || peers.get(peer.name) !== peer) return;
+    if (peer.hasAudio && peer.pc.connectionState === 'connected') return;
+    if (peer.hasAudio && peer.pc.connectionState !== 'failed' && peer.pc.connectionState !== 'disconnected') return;
+    const n = (peerTries.get(peer.name) || 0) + 1;
+    if (n > 4) return;
+    peerTries.set(peer.name, n);
+    closePeer(peer.name);
+    createPeer(peer.name, true);
+  }, delay);
+}
+
 function createPeer(name, initiator) {
   if (peers.has(name) || !localStream) return peers.get(name);
   const pc = new RTCPeerConnection({ iceServers: cfg.iceServers });
@@ -465,11 +483,11 @@ function createPeer(name, initiator) {
   };
   pc.ontrack = (e) => attachRemote(peer, e.streams[0] || new MediaStream([e.track]));
   pc.onconnectionstatechange = () => {
-    if (pc.connectionState === 'failed') {
-      // let the next join/peer_joined cycle rebuild it
-      peer.hasAudio = false;
-    }
+    if (pc.connectionState === 'failed') retryPeer(peer, 0);
+    else if (pc.connectionState === 'disconnected') retryPeer(peer, 4000);
   };
+  // Watchdog: if no audio shows up, rebuild the connection (a few attempts)
+  setTimeout(() => { if (!peer.hasAudio) retryPeer(peer, 0); }, 10000);
   if (initiator) {
     pc.onnegotiationneeded = async () => {
       try {
@@ -488,6 +506,10 @@ async function handleSignal(from, data) {
   if (!peer) return;
   const pc = peer.pc;
   if (data.description) {
+    // simultaneous offers: the "polite" side (lower name) yields, the other ignores
+    const collision = data.description.type === 'offer' && pc.signalingState !== 'stable';
+    const polite = session.name.toLowerCase() < String(from).toLowerCase();
+    if (collision && !polite) return;
     await pc.setRemoteDescription(data.description);
     for (const c of peer.pending) await pc.addIceCandidate(c).catch(() => {});
     peer.pending = [];
@@ -504,6 +526,7 @@ async function handleSignal(from, data) {
 function attachRemote(peer, stream) {
   if (peer.hasAudio || !audioCtx) return;
   peer.hasAudio = true;
+  peerTries.delete(peer.name);
   peer.stream = stream;
 
   // Chrome only delivers WebRTC audio to Web Audio if the stream is also attached to an element
