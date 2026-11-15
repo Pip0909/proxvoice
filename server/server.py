@@ -457,7 +457,8 @@ async def join_post(request):
     old_token = by_key.get(requested)
     if old_token:
         old = sessions.get(old_token)
-        if old and alive(old):
+        reclaim = bool(old) and secrets.compare_digest(str(body.get("token", "")), old_token)
+        if old and alive(old) and not reclaim:
             return JSONResponse({"error": "taken",
                                  "message": "ชื่อนี้กำลังถูกใช้งานอยู่ ลองใหม่อีกครั้งใน 20-30 วินาที"},
                                 status_code=409)

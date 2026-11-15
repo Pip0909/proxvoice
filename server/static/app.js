@@ -419,7 +419,7 @@ function scheduleReconnect(delay) {
 async function reconnect() {
   if (leaving || !session) return;
   try {
-    const res = await api('/api/join', { name: session.name });
+    const res = await api('/api/join', { name: session.name, token: session.token });
     if (res.ok) {
       session = { token: res.data.token, name: res.data.name };
       openEvents();
